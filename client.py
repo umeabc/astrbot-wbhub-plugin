@@ -232,6 +232,19 @@ def validate_analytics(raw: Any) -> AnalyticsPayload:
     return payload
 
 
+def validate_updates(raw: Any) -> Mapping[str, Any]:
+    """Validate the GET /updates payload — deliberately TOLERANT.
+
+    Only the structural minimum is enforced (top level must be an object);
+    every field is optional and unknown fields are kept as-is, because the
+    notice logic (reporting.derive_update_notice) treats absent/unparseable
+    version data as "no notice", never as an error.
+    """
+    if not isinstance(raw, Mapping):
+        raise HubProtocolError("updates payload is not an object")
+    return raw
+
+
 def validate_accounts(raw: Any) -> AccountsPayload:
     """Validate the GET /accounts payload: top level object with a list.
 
@@ -487,6 +500,86 @@ class WorkBuddyClient:
             except asyncio.TimeoutError as exc:
                 raise HubUnavailableError("accounts timeout") from exc
             return validate_accounts(raw)
+        raise HubAuthError("authentication failed after token renewal")
+
+    async def fetch_updates(self) -> Mapping[str, Any]:
+        """GET /updates — the Hub's update status (read-only, never runs a check).
+
+        Panel token required. Fields: current_version, latest_version (may be
+        null), latest_tag, update_available, enabled, checking, last_attempt,
+        last_success, last_error, release_url, published_at. When the Hub's
+        own daily auto-check is disabled, latest_version may be null and
+        update_available false — the plugin handles that via its own manual
+        check (check_updates).
+
+        Same error taxonomy / chunked reader / caps / proxy handling /
+        one-shot 401 login+replay as the other fetches. Validation is
+        tolerant: unknown/absent fields are fine, only the top-level shape
+        is enforced.
+        """
+        for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
+            if not self._token:
+                if not self._password:
+                    raise HubAuthError("no credentials configured")
+                await self._login_once()
+            headers = {"X-Panel-Token": self._token}
+            try:
+                async with self._session.get(
+                    self._url("/updates"),
+                    headers=headers,
+                    timeout=self._timeout,
+                    proxy=self._proxy,
+                ) as resp:
+                    if resp.status == 401 and attempt == 0 and self._password:
+                        # Token likely expired: renew once and replay.
+                        self._token = ""
+                        await self._login_once()
+                        continue
+                    self._raise_for_status(resp)
+                    self._capture_hub_date(resp)
+                    raw = await self._read_json(resp)
+            except aiohttp.ClientError as exc:
+                raise HubUnavailableError("updates transport failure") from exc
+            except asyncio.TimeoutError as exc:
+                raise HubUnavailableError("updates timeout") from exc
+            return validate_updates(raw)
+        raise HubAuthError("authentication failed after token renewal")
+
+    async def check_updates(self) -> Mapping[str, Any]:
+        """POST /updates/check (empty body) — run ONE bounded update check.
+
+        Upstream runs a single bounded GitHub request inline and returns the
+        fresh status synchronously (ok-style payload with the same fields as
+        GET /updates); it bypasses the Hub's enable switch and 24h window.
+        The result is persisted in the Hub, so subsequent GET /updates calls
+        report it. Error taxonomy and caps identical to fetch_updates.
+        """
+        for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
+            if not self._token:
+                if not self._password:
+                    raise HubAuthError("no credentials configured")
+                await self._login_once()
+            headers = {"X-Panel-Token": self._token}
+            try:
+                async with self._session.post(
+                    self._url("/updates/check"),
+                    json={},
+                    headers=headers,
+                    timeout=self._timeout,
+                    proxy=self._proxy,
+                ) as resp:
+                    if resp.status == 401 and attempt == 0 and self._password:
+                        self._token = ""
+                        await self._login_once()
+                        continue
+                    self._raise_for_status(resp)
+                    self._capture_hub_date(resp)
+                    raw = await self._read_json(resp)
+            except aiohttp.ClientError as exc:
+                raise HubUnavailableError("updates-check transport failure") from exc
+            except asyncio.TimeoutError as exc:
+                raise HubUnavailableError("updates-check timeout") from exc
+            return validate_updates(raw)
         raise HubAuthError("authentication failed after token renewal")
 
     async def logout(self) -> None:

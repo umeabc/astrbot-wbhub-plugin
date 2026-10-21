@@ -27,7 +27,14 @@ from .client import (
     WorkBuddyClient,
 )
 from .models import DailyReport
-from .reporting import aggregate, day_bounds, format_report, paginate_report
+from .reporting import (
+    aggregate,
+    append_update_notice,
+    day_bounds,
+    derive_update_notice,
+    format_report,
+    paginate_report,
+)
 
 # Clock-skew threshold (seconds): when the Hub's clock differs from the local
 # clock by more than this, log a warning — a silent mis-report becomes an
@@ -42,6 +49,10 @@ ERR_AUTH = "WorkBuddy Hub 认证失败，请联系管理员检查配置。"
 ERR_SCHEMA = "WorkBuddy Hub 响应格式不兼容，请联系管理员。"
 ERR_RATE_LIMIT = "WorkBuddy Hub 请求受限，请稍后重试。"
 ERR_COOLDOWN = "查询过于频繁，请稍后重试。"
+
+# /wbdiag notice-state strings (offline; no Hub request is made for these).
+DIAG_UPDATE_OFF = "网关更新: 已关闭"
+DIAG_UPDATE_NONE = "网关更新: 无或未知（诊断不联网）"
 
 
 def _id_set(value: object) -> set[str]:
@@ -99,6 +110,13 @@ class WorkBuddyUsagePlugin(Star):
         self._report_lock = asyncio.Lock()
         # Per-sender cooldown: sender id -> last successful/attempted ts.
         self._last_query: dict[str, float] = {}
+        # Gateway update-notice state (in-memory only, never persisted):
+        # the last rendered notice string ("" = none known), the monotonic
+        # timestamp of the last background manual check we fired, and the
+        # single in-flight background task handle.
+        self._update_notice: str = ""
+        self._last_update_check_ts: float | None = None
+        self._update_check_task: Optional[asyncio.Task] = None
 
     # -- validation helpers ---------------------------------------------------
 
@@ -154,6 +172,16 @@ class WorkBuddyUsagePlugin(Star):
 
     async def terminate(self) -> None:
         """Close the HTTP session even if initialization was partial."""
+        # Cancel/await a pending background update check FIRST so it never
+        # touches a closed session; safe when none was ever created.
+        task = self._update_check_task
+        self._update_check_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         client = self._client
         self._client = None
         if client is not None:
@@ -285,6 +313,64 @@ class WorkBuddyUsagePlugin(Star):
 
     # -- report ------------------------------------------------------------------
 
+    # -- gateway update notice ---------------------------------------------------
+
+    def _cfg_update_notice_enabled(self) -> bool:
+        return bool(self._config.get("update_notice", True))
+
+    def _maybe_schedule_update_check(self) -> None:
+        """Fire-and-forget background POST /updates/check.
+
+        Time-throttled (NOT gated on "no data yet"): the Hub persists check
+        results, so gating on missing data would fire once and then go
+        permanently stale. Conditions, ALL required:
+        - update_notice config is true;
+        - our own monotonic timestamp is absent or older than the interval;
+        - no check is currently in flight in this process;
+        - the payload does not say checking: true (respect the Hub's state).
+        The timestamp is updated the moment we fire, so a failing GitHub
+        request can never cause a request storm. The task swallows ALL
+        exceptions: a failed update check must never surface to the user.
+        """
+        if not self._cfg_update_notice_enabled():
+            return
+        if self._update_check_task is not None and not self._update_check_task.done():
+            return
+        interval_hours = self._cfg_int("update_check_interval_hours", 6, 1, 168)
+        now_mono = time.monotonic()
+        if (
+            self._last_update_check_ts is not None
+            and (now_mono - self._last_update_check_ts) < interval_hours * 3600
+        ):
+            return
+        client = self._client
+        if client is None:
+            return
+        self._last_update_check_ts = now_mono
+        self._update_check_task = asyncio.get_running_loop().create_task(
+            self._background_update_check(client)
+        )
+
+    async def _background_update_check(self, client: WorkBuddyClient) -> None:
+        """Run one manual check; on success remember the derived notice for
+        the NEXT /wb. Never raises — every failure is logged and dropped."""
+        try:
+            payload = await client.check_updates()
+            self._update_notice = derive_update_notice(payload)
+            logger.info(
+                "workbuddy_usage: background gateway update check done "
+                "(notice=%s)",
+                bool(self._update_notice),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never fatal, never shown
+            logger.info(
+                "workbuddy_usage: background gateway update check failed "
+                "(ignored): %s",
+                type(exc).__name__,
+            )
+
     async def _get_report(self, now: datetime) -> DailyReport:
         """Fetch analytics for the local day containing "now" and aggregate.
 
@@ -324,6 +410,29 @@ class WorkBuddyUsagePlugin(Star):
                 "per-account status: %s",
                 type(exc).__name__,
             )
+        # Gateway update notice: cheap GET /updates, derive the notice, and
+        # (throttled) fire a background manual check. A failure here must
+        # NEVER affect the report — degrade to no notice, log at info.
+        notice = ""
+        if self._cfg_update_notice_enabled():
+            try:
+                updates_payload = await self._client.fetch_updates()
+                notice = derive_update_notice(updates_payload)
+                if notice:
+                    self._update_notice = notice
+                if not updates_payload.get("checking"):
+                    self._maybe_schedule_update_check()
+            except HubError as exc:
+                logger.info(
+                    "workbuddy_usage: /updates unavailable, no update notice: %s",
+                    type(exc).__name__,
+                )
+            except Exception as exc:  # noqa: BLE001 - never fatal
+                logger.info(
+                    "workbuddy_usage: /updates handling failed, no update "
+                    "notice: %s",
+                    type(exc).__name__,
+                )
         # Capture the day from the SAME instant used for the query bounds, so
         # a request that completes after midnight still reports that day.
         effective = hub_now_utc if hub_now_utc is not None else now
@@ -338,6 +447,15 @@ class WorkBuddyUsagePlugin(Star):
             accounts_payload=accounts_payload,
             hub_now=accounts_hub_now,
         )
+
+    def report_notice(self) -> str:
+        """The current in-memory gateway-update notice ("" = none).
+
+        _get_report sets it for THIS reply; the background manual check may
+        also set it between /wb calls (it appears on the next report, never
+        retroactively). Kept as a method for clean test injection.
+        """
+        return self._update_notice
 
     def _warn_clock_skew(self, hub_now_utc: datetime) -> None:
         """Log a warning when the Hub's clock differs from the local clock."""
@@ -412,7 +530,7 @@ class WorkBuddyUsagePlugin(Star):
             except HubError:
                 yield event.plain_result(ERR_TRANSPORT)
             else:
-                text = format_report(report)
+                text = append_update_notice(format_report(report), self.report_notice())
                 for page in paginate_report(text, max_chars, max_lines):
                     yield event.plain_result(page)
         self._stop(event)
@@ -502,6 +620,20 @@ class WorkBuddyUsagePlugin(Star):
             f"查询窗口: {since_local.isoformat()} .. {until_local.isoformat()}"
             f"（{minutes} 分钟）"
         )
+
+        # Gateway update notice state — OFFLINE (no Hub request is made here;
+        # the value was captured by a previous /wb or background check).
+        if not self._cfg_update_notice_enabled():
+            lines.append(DIAG_UPDATE_OFF)
+        elif self._update_notice:
+            # The stored notice is the full report sentence
+            # (网关有更新，最新版本号v{X.Y.Z}); the diag line shows only the
+            # version, e.g. 网关更新: 有 v1.7.25.
+            prefix = "网关有更新，最新版本号v"
+            version = self._update_notice[len(prefix):] if self._update_notice.startswith(prefix) else ""
+            lines.append(f"网关更新: 有 v{version}" if version else DIAG_UPDATE_NONE)
+        else:
+            lines.append(DIAG_UPDATE_NONE)
 
         yield event.plain_result("\n".join(lines))
         self._stop(event)

@@ -64,6 +64,8 @@ tzdata>=2024.1
 | `max_message_chars` | 1800 | 单页字符上限（300..4000） |
 | `max_lines_per_message` | 35 | 单页行数上限（5..100） |
 | `max_response_bytes` | 5242880 | Hub JSON 响应上限（65536..52428800） |
+| `update_notice` | `true` | 在 `/wb` 末尾提示网关有新版本（需网关能访问 GitHub） |
+| `update_check_interval_hours` | 6 | 后台检查网关新版本的最小间隔（小时，1..168） |
 
 ## 用法
 
@@ -88,6 +90,20 @@ glm-5.3-flash：10.04 积分
 - **`剩余` 是该账号当前的积分余额**，与 `已消耗` 是两回事。
 - 「使用模型统计」是**全实例跨账号汇总**。Hub 不提供「账号 × 模型」的积分分解，插件**不会伪造或按比例推算**。
 - 累计 Token 取自同一响应体的 `summary.all_time`，与当日数据天然同一时刻。
+
+### 网关更新提示（v1.2.0）
+
+`/wb` 报表的**最后一行**（在「使用模型统计」和任何「警告：」之后）可能是：
+
+```
+网关有更新，最新版本号v1.7.25
+```
+
+- 只有当 Hub 的 `/updates` 报告了**确实比当前版本新**的版本号时才显示；网关已是最新（或版本数据缺失 / 无法解析 / `/updates` 请求失败）时**什么都不打印**，报表与旧版逐字节一致。
+- 插件每次 `/wb` 都会读一次廉价的 `GET /updates`，并按 `update_check_interval_hours` 的**时间节流**在**后台**调用一次 `POST /updates/check`（只读 GitHub，不安装任何东西），结果在**下一次** `/wb` 中体现，本次回复不变。
+  之所以按时间而不是"有没有数据"来节流：Hub 会把检查结果落盘，一旦拿到过版本号就不会再自动检查；若按"缺数据"触发，提示会永久停在旧版本上。
+- 插件自己做节流的手动检查，因此 Hub 面板里的「更新检查」开关保持关闭即可；前提是 **Hub 所在机器能访问 GitHub**，否则检查只会静默失败，不影响报表。
+- 关闭 `update_notice` 后，`GET /updates` 与后台检查都完全不发。
 
 ### 账号状态词表
 
@@ -161,7 +177,7 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.7.19** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.7.19 之间**没有变更**。
+- **WorkBuddy Hub**：契约按 **v1.7.24** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.7.24 之间**没有变更**；v1.7.24 的 `/accounts` 仅新增 `tasksEnabled` 布尔字段（本插件不渲染它），`Account._throttle_snapshot`（`modelCooldowns` 等）逐字节一致。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢

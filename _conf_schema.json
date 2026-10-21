@@ -85,5 +85,15 @@
     "type": "int",
     "default": 5242880,
     "description": "Hub JSON 响应最大字节数，超过即拒绝，有效范围 65536..52428800。"
+  },
+  "update_notice": {
+    "type": "bool",
+    "default": true,
+    "description": "在 /wb 末尾提示网关有新版本（需网关能访问 GitHub）。"
+  },
+  "update_check_interval_hours": {
+    "type": "int",
+    "default": 6,
+    "description": "后台检查网关新版本的最小间隔（小时），有效范围 1..168。"
   }
 }

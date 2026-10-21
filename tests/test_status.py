@@ -24,7 +24,6 @@ from conftest import make_analytics, make_account, make_stat
 
 TZ = "Asia/Shanghai"
 TZ_OBJ = ZoneInfo(TZ)
-pytestmark = pytest.mark.asyncio
 
 # Fixed Hub instant: 2025-10-17 15:18:00 UTC+8 (07:18:00 UTC).
 HUB_NOW = datetime(2025, 10, 17, 7, 18, 0, tzinfo=dt_timezone.utc)

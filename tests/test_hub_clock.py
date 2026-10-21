@@ -24,7 +24,7 @@ from astrbot_plugin_workbuddy_usage.reporting import day_bounds, day_bounds_from
 from conftest import make_analytics, make_stat
 
 TZ = "Asia/Shanghai"
-pytestmark = pytest.mark.asyncio
+# NOTE: module contains sync tests; asyncio_mode=auto handles both.
 
 
 # ---------------------------------------------------------------------------

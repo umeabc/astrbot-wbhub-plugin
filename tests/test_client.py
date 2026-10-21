@@ -18,7 +18,6 @@ from astrbot_plugin_workbuddy_usage.client import (
 )
 from conftest import make_analytics, make_stat
 
-pytestmark = pytest.mark.asyncio
 
 
 def make_client(hub, session, **kw) -> WorkBuddyClient:

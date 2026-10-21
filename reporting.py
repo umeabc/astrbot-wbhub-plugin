@@ -506,6 +506,62 @@ def format_report(report: DailyReport) -> str:
     return "\n".join(lines)
 
 
+_UPDATE_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+# Exact rendered gateway-update notice; {version} is the bare X.Y.Z (the
+# plugin adds the single leading v — never doubled when the source had one).
+UPDATE_NOTICE_FORMAT = "网关有更新，最新版本号v{version}"
+
+
+def parse_version_tuple(value: object) -> tuple[int, int, int] | None:
+    """Parse an X.Y.Z version string (tolerating one leading v/V) into a
+    comparable tuple. Returns None for anything unparseable — never raises."""
+    if not isinstance(value, str):
+        return None
+    m = _UPDATE_VERSION_RE.match(value.strip())
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def derive_update_notice(updates: Mapping[str, Any] | None) -> str:
+    """Decide the gateway-update notice line from a GET /updates payload.
+
+    Returns the notice string ONLY when a genuinely newer version is known:
+    candidate = latest_version (non-empty string), else latest_tag with one
+    leading v stripped; both candidate and current_version must parse as
+    X.Y.Z and candidate must be strictly greater (tuple compare). The
+    update_available boolean is deliberately NOT trusted alone — the Hub's
+    own flag depends on its auto-check being enabled. Any other shape yields
+    "" (no notice), never an exception.
+    """
+    if not isinstance(updates, Mapping):
+        return ""
+    candidate_raw = updates.get("latest_version")
+    if not (isinstance(candidate_raw, str) and candidate_raw.strip()):
+        candidate_raw = updates.get("latest_tag")
+    if not (isinstance(candidate_raw, str) and candidate_raw.strip()):
+        return ""
+    candidate = parse_version_tuple(candidate_raw)
+    current = parse_version_tuple(updates.get("current_version"))
+    if candidate is None or current is None:
+        return ""
+    if candidate <= current:
+        return ""
+    return UPDATE_NOTICE_FORMAT.format(version=".".join(str(n) for n in candidate))
+
+
+def append_update_notice(report_text: str, notice: str) -> str:
+    """Append the update notice as the VERY LAST line of the report.
+
+    The notice goes after the 使用模型统计 block AND after any 警告： lines
+    (it is always last). Empty notice → the text is returned unchanged
+    (byte-identical to the no-notice baseline).
+    """
+    if not notice:
+        return report_text
+    return report_text + "\n" + notice
+
+
 def paginate_report(text: str, max_chars: int, max_lines: int) -> list[str]:
     """Split plain text into complete pages at line boundaries.
 

@@ -284,6 +284,14 @@ class StubHub:
         self.accounts_status = 200
         self.accounts_date: str | None = None
         self.accounts_calls: list[Mapping[str, Any]] = []
+        # /updates + /updates/check knobs (v1.2.0)
+        self.updates_body: Any = None
+        self.updates_status = 200
+        self.updates_calls: list[Mapping[str, Any]] = []
+        self.updates_check_status = 200
+        self.updates_check_result: Any = None
+        self.updates_check_delay: float = 0.0
+        self.update_check_calls: list[Mapping[str, Any]] = []
 
     async def start(self, aiohttp_client_factory=None) -> None:
         app = web.Application()
@@ -292,6 +300,8 @@ class StubHub:
         app.router.add_get("/accounts", self._accounts)
         app.router.add_get("/usage/analytics_streamed", self._analytics_streamed)
         app.router.add_post("/panel/logout", self._logout)
+        app.router.add_get("/updates", self._updates)
+        app.router.add_post("/updates/check", self._updates_check)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -367,6 +377,36 @@ class StubHub:
             await asyncio.sleep(0)
         await resp.write_eof()
         return resp
+
+    async def _updates(self, request: web.Request) -> web.Response:
+        self.updates_calls.append(
+            {"token": request.headers.get("X-Panel-Token")}
+        )
+        if request.headers.get("X-Panel-Token") not in self.valid_tokens:
+            return web.json_response({"ok": False}, status=401)
+        body = self.updates_body if self.updates_body is not None else {
+            "current_version": "1.7.24", "latest_version": None,
+            "latest_tag": "", "update_available": False, "enabled": False,
+        }
+        return web.json_response(body, status=self.updates_status)
+
+    async def _updates_check(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        self.update_check_calls.append(
+            {"token": request.headers.get("X-Panel-Token"), "body": body}
+        )
+        if request.headers.get("X-Panel-Token") not in self.valid_tokens:
+            return web.json_response({"ok": False}, status=401)
+        if self.updates_check_delay:
+            await asyncio.sleep(self.updates_check_delay)
+        result = self.updates_check_result if self.updates_check_result is not None else {
+            "current_version": "1.7.24", "latest_version": "1.7.24",
+            "latest_tag": "v1.7.24", "update_available": False, "ok": True,
+        }
+        return web.json_response(result, status=self.updates_check_status)
 
     async def _logout(self, request: web.Request) -> web.Response:
         self.logout_calls.append({"token": request.headers.get("X-Panel-Token")})
