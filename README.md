@@ -1,4 +1,4 @@
-# astrbot_plugin_workbuddy_usage
+# astrbot-wbhub-plugin
 
 AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的当日用量报表 —— 包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）。
 
