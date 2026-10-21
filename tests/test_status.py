@@ -189,7 +189,7 @@ class TestReportIntegration:
         report = build_report([live_account(breakerFor=BREAKER_SECONDS, uid="1111aaaa")])
         text = format_report(report)
         line = line_for(text, "1111aaaa")
-        assert line == "1111aaaa [cn](熔断，10-17 16:19 恢复)：已消耗 0 积分，剩余 500 积分"
+        assert line == "1111aaaa [cn]【熔断，10-17 16:19 恢复】：已消耗 0 积分，剩余 500 积分"
 
     async def test_multiple_statuses_in_report_line(self):
         epoch = 1760685780
@@ -200,7 +200,7 @@ class TestReportIntegration:
             )]
         )
         line = line_for(format_report(report), "2222bbbb")
-        assert "(deepseek-v4.1-flash被429，10-17 15:23 恢复)" in line
+        assert "【deepseek-v4.1-flash被429，10-17 15:23 恢复】" in line
 
     async def test_roster_extended_with_accounts_only_entry(self):
         # /accounts knows an account that analytics does not mention.
@@ -275,8 +275,8 @@ class TestAccountsFailureFallback:
     async def test_no_hub_now_uses_local_clock_for_relative(self):
         report = build_report([live_account(breakerFor=60)])
         text = format_report(report)
-        assert "熔断，" in text and " 恢复)" in text
-        assert "(" in text and ")" in text
+        assert "熔断，" in text and " 恢复】" in text
+        assert "【" in text and "】" in text
 
 
 class TestClientFetchAccounts:
@@ -358,8 +358,8 @@ class TestLivePayloadFormatting:
         ])
         text = format_report(report)
         assert "deadbeef [cn]：" in text
-        assert "1111aaaa [cn](熔断，10-17 16:19 恢复)：" in text
-        assert "2222bbbb [intl](deepseek-v4.1-flash被429，10-17 15:23 恢复)：" in text
+        assert "1111aaaa [cn]【熔断，10-17 16:19 恢复】：" in text
+        assert "2222bbbb [intl]【deepseek-v4.1-flash被429，10-17 15:23 恢复】：" in text
 
 
 class TestDisabledModelsSegment:

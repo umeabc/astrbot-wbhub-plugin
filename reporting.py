@@ -481,9 +481,9 @@ def format_report(report: DailyReport) -> str:
         lines.append(f"账号（{len(report.accounts)}）：")
         for a in report.accounts:
             realm = f" [{a.realm}]" if a.realm else ""
-            # STATUS: appended in parentheses between the realm marker and the
+            # STATUS: appended in 【】 brackets between the realm marker and the
             # full-width colon. Normal accounts (status "") show NOTHING.
-            status = f"({a.status})" if a.status else ""
+            status = f"【{a.status}】" if a.status else ""
             remain = "—" if a.remaining is None else format_credit(a.remaining)
             lines.append(
                 f"{a.uid[:8]}{realm}{status}：已消耗 {format_credit(a.credits)} 积分，剩余 {remain} 积分"

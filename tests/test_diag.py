@@ -93,15 +93,15 @@ class TestDenyReasons:
     def _reason(self, plugin, ev):
         return plugin._deny_reason(ev)
 
-    def test_non_qq_adapter_reason(self):
-        plugin = make_plugin()
+    def test_platform_gate_reason(self):
+        plugin = make_plugin(allowed_platforms=["aiocqhttp"])
         r = self._reason(plugin, FakeEvent(platform="telegram", sender="10001"))
-        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不受支持：telegram）"
+        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中：telegram）"
 
-    def test_non_qq_adapter_unknown_name(self):
-        plugin = make_plugin()
+    def test_platform_gate_unknown_name(self):
+        plugin = make_plugin(allowed_platforms=["telegram"])
         r = self._reason(plugin, FakeEvent(platform="", sender="10001"))
-        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不受支持：未知）"
+        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中：未知）"
 
     def test_sender_id_missing(self):
         plugin = make_plugin()
@@ -116,26 +116,26 @@ class TestDenyReasons:
     def test_private_user_missing(self):
         plugin = make_plugin(allowed_qq_users=["10001"])
         r = self._reason(plugin, FakeEvent(group=None, sender="10002"))
-        assert r == "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中）"
+        assert r == "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中）"
 
     def test_group_user_missing_distinct_from_private(self):
         plugin = make_plugin(allowed_qq_users=["10001"], allowed_qq_groups=["20001"])
         r = self._reason(plugin, FakeEvent(group="20001", sender="10002"))
         assert r == (
-            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中；"
-            "群聊要求 allowed_qq_users 与 allowed_qq_groups 同时命中）"
+            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中；"
+            "群聊要求 allowed_users 与 allowed_groups 同时命中）"
         )
         assert r != self._reason(plugin, FakeEvent(group=None, sender="10002"))
 
     def test_group_missing_distinct(self):
         plugin = make_plugin(allowed_qq_users=["10001"])
         r = self._reason(plugin, FakeEvent(group="20001", sender="10001"))
-        assert r == "无权查询 WorkBuddy 用量。（本群不在 allowed_qq_groups 白名单中）"
+        assert r == "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
 
     def test_group_both_missing_reports_sender(self):
         plugin = make_plugin()
         r = self._reason(plugin, FakeEvent(group="20001", sender="10002"))
-        assert "allowed_qq_users 白名单中；" in r
+        assert "allowed_users 白名单中；" in r
 
     def test_admin_bypass_disabled(self):
         plugin = make_plugin(allow_admin=False)
@@ -177,7 +177,7 @@ class TestWbDiag:
         assert results, "wbdiag must reply even to an unauthorized caller"
         text = results[0].chain[0].text if hasattr(results[0], "chain") else str(results[0])
         assert "10001" in text
-        assert "拒绝" in text and "allowed_qq_users" in text
+        assert "拒绝" in text and "allowed_users" in text
 
     def test_group_diag_unauthorized(self):
         plugin = make_plugin(allowed_qq_users=["10001"], allowed_qq_groups=["20001"])
@@ -228,11 +228,30 @@ class TestWbDenialReplies:
     def _first_text(self, plugin, ev):
         return self._collect_wb(plugin, ev)[0].chain[0].text
 
-    def test_case1_adapter_not_qq(self):
-        plugin = make_plugin(allowed_qq_users=["10001"])
+    def test_case1_platform_not_allowed(self):
+        plugin = make_plugin(allowed_platforms=["aiocqhttp"], allowed_qq_users=["10001"])
         ev = FakeEvent(platform="telegram", sender="10001")
         assert self._first_text(plugin, ev) == (
-            "无权查询 WorkBuddy 用量。（当前消息平台不受支持：telegram）"
+            "无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中：telegram）"
+        )
+
+    def test_case1b_platform_empty_means_no_gate(self):
+        plugin = make_plugin(allowed_qq_users=["10001"])
+        ev = FakeEvent(platform="telegram", sender="10001", group=None)
+        # legacy allowlist authorizes the telegram sender; proceeds to the
+        # not-configured branch (no Hub) rather than being refused.
+        assert self._first_text(plugin, ev) == "WorkBuddy 查询未配置，请联系管理员。"
+
+    def test_case1c_telegram_group_authorized(self):
+        plugin = make_plugin(allowed_users=["10001"], allowed_groups=["20001"])
+        ev = FakeEvent(platform="telegram", sender="10001", group="20001")
+        assert self._first_text(plugin, ev) == "WorkBuddy 查询未配置，请联系管理员。"
+
+    def test_case1d_telegram_group_not_allowlisted(self):
+        plugin = make_plugin(allowed_users=["10001"], allowed_groups=["20001"])
+        ev = FakeEvent(platform="telegram", sender="10001", group="20002")
+        assert self._first_text(plugin, ev) == (
+            "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
         )
 
     def test_case2_sender_id_missing(self):
@@ -264,22 +283,22 @@ class TestWbDenialReplies:
         plugin = make_plugin(allowed_qq_users=["10001"])
         ev = FakeEvent(platform="aiocqhttp", sender="10002", group=None)
         assert self._first_text(plugin, ev) == (
-            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中）"
+            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中）"
         )
 
     def test_case6_group_sender_not_whitelisted(self):
         plugin = make_plugin(allowed_qq_users=["10001"], allowed_qq_groups=["20001"])
         ev = FakeEvent(platform="aiocqhttp", sender="10002", group="20001")
         assert self._first_text(plugin, ev) == (
-            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中；"
-            "群聊要求 allowed_qq_users 与 allowed_qq_groups 同时命中）"
+            "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中；"
+            "群聊要求 allowed_users 与 allowed_groups 同时命中）"
         )
 
     def test_case7_group_not_whitelisted(self):
         plugin = make_plugin(allowed_qq_users=["10001"], allowed_qq_groups=["20001"])
         ev = FakeEvent(platform="aiocqhttp", sender="10001", group="20002")
         assert self._first_text(plugin, ev) == (
-            "无权查询 WorkBuddy 用量。（本群不在 allowed_qq_groups 白名单中）"
+            "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
         )
 
     def test_case8_admin_bypass_disabled(self):
@@ -300,3 +319,32 @@ class TestWbDenialReplies:
         plugin._session = None
         ev = FakeEvent(platform="aiocqhttp", sender="10001", group=None)
         assert self._first_text(plugin, ev) == "WorkBuddy 查询未配置，请联系管理员。"
+
+
+class TestWbDiagMultiPlatform:
+    def _collect(self, plugin, ev):
+        import asyncio
+
+        async def run():
+            return [msg async for msg in plugin.wbdiag(ev)]
+
+        return asyncio.run(run())
+
+    def test_diag_telegram_shows_new_fields(self):
+        plugin = make_plugin(allowed_users=["10001"], allowed_groups=["20001"])
+        ev = FakeEvent(platform="telegram", sender="10001", group=None)
+        text = self._collect(plugin, ev)[0].chain[0].text
+        assert "平台/适配器: telegram" in text
+        assert "allowed_platforms: 未限制" in text
+        assert "allowed_users: 1 项" in text
+        assert "allowed_groups: 1 项" in text
+        assert "判定: 允许" in text
+        # no leak of configured ids
+        assert "20001" not in text
+
+    def test_diag_platform_gate_counted(self):
+        plugin = make_plugin(allowed_platforms=["telegram", "aiocqhttp"])
+        ev = FakeEvent(platform="telegram", sender="10001", group=None)
+        text = self._collect(plugin, ev)[0].chain[0].text
+        assert "allowed_platforms: 2 项" in text
+        assert "telegram、aiocqhttp" not in text  # values never printed

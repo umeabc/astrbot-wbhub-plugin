@@ -52,17 +52,71 @@ def make_plugin(**cfg: Any) -> WorkBuddyUsagePlugin:
     return WorkBuddyUsagePlugin(context=None, config=FakeConfig(defaults))  # type: ignore[arg-type]
 
 
-class TestNonQQDenied:
-    @pytest.mark.parametrize("platform", ["telegram", "discord", "wecom", "lark"])
-    def test_other_platforms_denied(self, platform):
-        plugin = make_plugin(allowed_qq_users=["10001"])
-        ev = FakeEvent(platform=platform, sender="10001", group=None)
-        assert plugin._allowed(ev) is False
+class TestMultiPlatform:
+    """Any platform is now authorized via the same allowlists."""
 
-    def test_non_qq_denied_even_if_admin(self):
+    @pytest.mark.parametrize("platform", ["telegram", "discord", "wecom", "lark"])
+    def test_other_platforms_authorized(self, platform):
+        plugin = make_plugin(allowed_users=["10001"])
+        ev = FakeEvent(platform=platform, sender="10001", group=None)
+        assert plugin._allowed(ev) is True
+
+    def test_non_qq_allowed_if_admin(self):
         plugin = make_plugin()
         ev = FakeEvent(platform="telegram", sender="x", admin=True)
+        assert plugin._allowed(ev) is True
+
+
+class TestLegacyKeys:
+    def test_legacy_users_still_authorize_qq(self):
+        plugin = make_plugin(allowed_qq_users=["10001"])
+        assert plugin._allowed(FakeEvent(platform="aiocqhttp", group=None, sender="10001")) is True
+
+    def test_legacy_users_authorize_other_platforms(self):
+        plugin = make_plugin(allowed_qq_users=["10001"])
+        assert plugin._allowed(FakeEvent(platform="telegram", group=None, sender="10001")) is True
+
+    def test_legacy_and_new_keys_union(self):
+        plugin = make_plugin(allowed_users=["10001"], allowed_qq_users=["20002"])
+        assert plugin._allowed(FakeEvent(platform="telegram", group=None, sender="10001")) is True
+        assert plugin._allowed(FakeEvent(platform="aiocqhttp", group=None, sender="20002")) is True
+        assert plugin._allowed(FakeEvent(platform="telegram", group=None, sender="99999")) is False
+
+    def test_legacy_groups_still_authorize(self):
+        plugin = make_plugin(allowed_qq_users=["10001"], allowed_qq_groups=["20001"])
+        assert plugin._allowed(FakeEvent(group="20001", sender="10001")) is True
+
+
+class TestPlatformGate:
+    def test_gate_empty_allows_all(self):
+        plugin = make_plugin(allowed_users=["10001"])
+        assert plugin._allowed(FakeEvent(platform="telegram", group=None, sender="10001")) is True
+
+    def test_gate_matching_platform_allowed(self):
+        plugin = make_plugin(allowed_platforms=["telegram"], allowed_users=["10001"])
+        ev = FakeEvent(platform="telegram", group=None, sender="10001")
+        assert plugin._allowed(ev) is True
+
+    def test_gate_mismatch_denies(self):
+        plugin = make_plugin(allowed_platforms=["telegram"], allowed_users=["10001"])
+        ev = FakeEvent(platform="aiocqhttp", group=None, sender="10001")
+        r = plugin._deny_reason(ev)
+        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中：aiocqhttp）"
+
+    def test_gate_case_insensitive(self):
+        plugin = make_plugin(allowed_platforms=["Telegram"], allowed_users=["10001"])
+        assert plugin._allowed(FakeEvent(platform="TELEGRAM", group=None, sender="10001")) is True
+
+    def test_gate_fail_closed_on_empty_adapter(self):
+        plugin = make_plugin(allowed_platforms=["telegram"], allowed_users=["10001"])
+        ev = FakeEvent(platform="", group=None, sender="10001")
         assert plugin._allowed(ev) is False
+        r = plugin._deny_reason(ev)
+        assert r == "无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中：未知）"
+
+    def test_gate_applies_to_admin_too(self):
+        plugin = make_plugin(allowed_platforms=["telegram"])
+        assert plugin._allowed(FakeEvent(platform="aiocqhttp", sender="x", admin=True)) is False
 
 
 class TestAdminBypass:

@@ -31,20 +31,35 @@
     "default": "Asia/Shanghai",
     "description": "用于计算当日 0 点边界的 IANA 时区名。"
   },
+  "allowed_platforms": {
+    "type": "list",
+    "default": [],
+    "description": "允许使用的消息平台（如 telegram、aiocqhttp）。留空 = 不限制平台。"
+  },
+  "allowed_users": {
+    "type": "list",
+    "default": [],
+    "description": "允许查询的用户 ID（各平台的发送者 ID）。空 = 拒绝所有非管理员。"
+  },
+  "allowed_groups": {
+    "type": "list",
+    "default": [],
+    "description": "允许查询的群/频道 ID。群里非管理员要求用户与群同时命中。"
+  },
   "allowed_qq_users": {
     "type": "list",
     "default": [],
-    "description": "允许查询的 QQ 用户 ID（十进制字符串）；非管理员必须在此列表中。"
+    "description": "旧键名，等价于 allowed_users，保留向后兼容。"
   },
   "allowed_qq_groups": {
     "type": "list",
     "default": [],
-    "description": "允许查询的 QQ 群 ID；群内非管理员查询要求发送者与群同时都在白名单。"
+    "description": "旧键名，等价于 allowed_groups，保留向后兼容。"
   },
   "allow_admin": {
     "type": "bool",
     "default": true,
-    "description": "允许 event.is_admin() 的管理员绕过 QQ 白名单（不能绕过平台限制）。"
+    "description": "允许 event.is_admin() 的管理员绕过用户白名单（不能绕过平台限制）。"
   },
   "allow_private": {
     "type": "bool",

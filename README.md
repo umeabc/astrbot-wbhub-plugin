@@ -1,6 +1,6 @@
 # astrbot_plugin_workbuddy_usage
 
-AstrBot 插件：在 QQ 里发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的当日用量报表 —— 包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）。
+AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的当日用量报表 —— 包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）。
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
@@ -54,8 +54,10 @@ tzdata>=2024.1
 | `panel_token` | （空，secret） | 可选，预获取的 `X-Panel-Token`；配了密码时 401 后会自动续期一次 |
 | `timeout_seconds` | 15.0 | HTTP 总超时（1..120） |
 | `default_timezone` | `Asia/Shanghai` | 计算「当日 0 点」所用时区（IANA 名） |
-| `allowed_qq_users` | `[]` | 允许查询的 QQ 号。**空 = 拒绝所有非管理员** |
-| `allowed_qq_groups` | `[]` | 允许查询的群号。群里非管理员要求「QQ 号」和「群号」**同时**命中 |
+| `allowed_platforms` | `[]` | 允许使用的消息平台（如 `telegram`、`aiocqhttp`）。留空 = 不限制平台 |
+| `allowed_users` | `[]` | 允许查询的用户 ID（各平台的发送者 ID）。**空 = 拒绝所有非管理员** |
+| `allowed_groups` | `[]` | 允许查询的群/频道 ID。群里非管理员要求「用户 ID」和「群 ID」**同时**命中 |
+| `allowed_qq_users` / `allowed_qq_groups` | `[]` | **旧键名**，等价于 `allowed_users` / `allowed_groups`，保留向后兼容（与新键取并集） |
 | `allow_admin` | `true` | AstrBot 管理员可绕过白名单（不能绕过平台限制） |
 | `allow_private` | `true` | 是否允许私聊查询（管理员同样受此约束） |
 | `cooldown_seconds` | 10 | 同一发送者的查询间隔（0..3600） |
@@ -76,7 +78,7 @@ WorkBuddy 当日用量
 账号（3）：
 a1b2c3d4 [cn]：已消耗 38.19 积分，剩余 4288.97 积分
 e5f6a7b8 [cn]：已消耗 34.64 积分，剩余 3478.61 积分
-c9d0e1f2 [intl](近期429（code 14003，当前未限制）)：已消耗 0 积分，剩余 528.18 积分
+c9d0e1f2 [intl]【近期429（code 14003，当前未限制）】：已消耗 0 积分，剩余 528.18 积分
 使用模型统计：
 deepseek-v4.1-flash：69.93 积分
 glm-5.3-flash：10.04 积分
@@ -89,7 +91,7 @@ glm-5.3-flash：10.04 积分
 
 ### 账号状态词表
 
-正常账号**不显示任何括号内容**。出现下列情况时，会在 `[区域]` 之后以括号追加，多个状态用 `；` 连接：
+正常账号**不显示任何状态内容**。出现下列情况时，会在 `[区域]` 之后以【】追加（内部的时间等细节仍用全角括号），多个状态用 `；` 连接：
 
 | 状态 | 触发条件 | 含恢复时间 |
 | --- | --- | --- |
@@ -109,6 +111,12 @@ glm-5.3-flash：10.04 积分
 | `近期429（code N，当前未限制）` | 历史错误兜底：只剩陈旧的 `lastError`，当前**没有任何**限制 | — |
 
 最后一条值得解释：Hub 的 `lastError` 是**历史记录**，冷却结束后仍会保留到下一次成功请求。所以一个账号可能"看起来被 429 了"，但实际上冷却早已过期、当前完全可用 —— 这时插件只会如实标注「当前未限制」，**不会给一个假的解封时间**。
+
+### 多平台
+
+- 白名单里填的是**该平台自己的**发送者 / 群 ID：Telegram 的数字用户 ID、QQ 的 QQ 号等互不通用。用 `/wbdiag` 在目标平台里发一条即可看到插件读到的 ID。
+- 群聊 / 频道查询要求发送者与群**同时**命中 `allowed_users` 与 `allowed_groups`。
+- `allowed_platforms` 可限制哪些平台允许使用（如只填 `["aiocqhttp"]` 则 Telegram 会被拒绝）；留空则不限制。
 
 ## 安全
 
@@ -154,7 +162,7 @@ python -m pytest tests -q
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
 - **WorkBuddy Hub**：契约按 **v1.7.19** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.7.19 之间**没有变更**。
-- 支持平台：`aiocqhttp`（QQ 个人号）与 `qq_official`（QQ 官方机器人）。其他平台的事件一律拒绝。
+- 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢
 

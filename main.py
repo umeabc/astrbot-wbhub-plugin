@@ -168,44 +168,56 @@ class WorkBuddyUsagePlugin(Star):
 
     # -- authorization -----------------------------------------------------------
 
-    def _qq_ids(self, event: AstrMessageEvent) -> tuple[Optional[str], Optional[str]]:
-        """Extract (sender_id, group_id); returns Nones on non-QQ adapters."""
-        adapter = getattr(event, "get_platform_name", lambda: "")() or ""
-        if "aiocqhttp" not in adapter and "qq" not in adapter.lower():
-            return None, None
+    def _event_ids(self, event: AstrMessageEvent) -> tuple[Optional[str], Optional[str]]:
+        """Extract (sender_id, group_id) platform-agnostically.
+
+        Never gates on the platform name: every adapter exposes the same
+        accessors. Both reads are individually guarded; empty strings and
+        unavailable ids normalize to None.
+        """
         try:
             sender = event.get_sender_id()
         except Exception:  # noqa: BLE001 - some adapters may not expose a sender id
             sender = None
-        group = None
         try:
             group = event.get_group_id()
         except Exception:  # noqa: BLE001 - private chats may not expose groups
             group = None
         return str(sender) if sender else None, str(group) if group else None
 
+    def _platform_gate_ok(self, adapter: str) -> bool:
+        """True when allowed_platforms is empty (no gate) or contains adapter."""
+        configured = _id_set(self._config.get("allowed_platforms"))
+        if not configured:
+            return True
+        return bool(adapter) and adapter.strip().lower() in {
+            name.strip().lower() for name in configured
+        }
+
     def _deny_reason(self, event: AstrMessageEvent) -> str:
         """Return "" when allowed, else the exact user-facing denial text.
 
         The returned string is both the chat reply and the log reason, so log
-        and chat always agree. Never echoes the caller's QQ/group id.
+        and chat always agree. Never echoes the caller's account/group id.
         """
-        sender, group = self._qq_ids(event)
-        adapter = getattr(event, "get_platform_name", lambda: "")() or ""
+        adapter = str(getattr(event, "get_platform_name", lambda: "")() or "").strip()
+        if not self._platform_gate_ok(adapter):
+            reason = (
+                f"无权查询 WorkBuddy 用量。（当前消息平台不在 allowed_platforms 中："
+                f"{adapter or '未知'}）"
+            )
+            logger.info("workbuddy_usage denied: platform gate (adapter=%r)", adapter)
+            return reason
+
+        sender, group = self._event_ids(event)
         if sender is None:
             raw_sender = None
             try:
                 raw_sender = event.get_sender_id()
             except Exception:  # noqa: BLE001
                 raw_sender = None
-            if "aiocqhttp" in adapter or "qq" in adapter.lower():
-                reason = "无权查询 WorkBuddy 用量。（无法识别你的账号标识）"
-                detail = f"sender id missing (adapter={adapter!r} raw_sender={raw_sender!r})"
-            else:
-                reason = (
-                    f"无权查询 WorkBuddy 用量。（当前消息平台不受支持：{adapter or '未知'}）"
-                )
-                detail = f"non-qq adapter (adapter={adapter!r})"
+            reason = "无权查询 WorkBuddy 用量。（无法识别你的账号标识）"
+            detail = f"sender id missing (adapter={adapter!r} raw_sender={raw_sender!r})"
             logger.info("workbuddy_usage denied: %s", detail)
             return reason
 
@@ -215,8 +227,15 @@ class WorkBuddyUsagePlugin(Star):
         except Exception:  # noqa: BLE001
             is_admin = False
 
-        allowed_users = _id_set(self._config.get("allowed_qq_users"))
-        allowed_groups = _id_set(self._config.get("allowed_qq_groups"))
+        # Effective allowlists: new keys unioned with the legacy qq-only keys.
+        allowed_users = (
+            _id_set(self._config.get("allowed_users"))
+            | _id_set(self._config.get("allowed_qq_users"))
+        )
+        allowed_groups = (
+            _id_set(self._config.get("allowed_groups"))
+            | _id_set(self._config.get("allowed_qq_groups"))
+        )
         allow_private = bool(self._config.get("allow_private", True))
         allow_admin = bool(self._config.get("allow_admin", True))
         ctx = (
@@ -235,7 +254,7 @@ class WorkBuddyUsagePlugin(Star):
             elif sender in allowed_users:
                 return ""
             else:
-                reason = "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中）"
+                reason = "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中）"
         else:
             if is_admin:
                 if allow_admin:
@@ -243,11 +262,11 @@ class WorkBuddyUsagePlugin(Star):
                 reason = "无权查询 WorkBuddy 用量。（管理员豁免已被 allow_admin=false 关闭）"
             elif sender not in allowed_users:
                 reason = (
-                    "无权查询 WorkBuddy 用量。（你的账号不在 allowed_qq_users 白名单中；"
-                    "群聊要求 allowed_qq_users 与 allowed_qq_groups 同时命中）"
+                    "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中；"
+                    "群聊要求 allowed_users 与 allowed_groups 同时命中）"
                 )
             elif group not in allowed_groups:
-                reason = "无权查询 WorkBuddy 用量。（本群不在 allowed_qq_groups 白名单中）"
+                reason = "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
             else:
                 return ""
 
@@ -420,8 +439,15 @@ class WorkBuddyUsagePlugin(Star):
         group = str(raw_group) if raw_group else None
         private_chat = not group
 
-        allowed_users = _id_set(self._config.get("allowed_qq_users"))
-        allowed_groups = _id_set(self._config.get("allowed_qq_groups"))
+        allowed_users = (
+            _id_set(self._config.get("allowed_users"))
+            | _id_set(self._config.get("allowed_qq_users"))
+        )
+        allowed_groups = (
+            _id_set(self._config.get("allowed_groups"))
+            | _id_set(self._config.get("allowed_qq_groups"))
+        )
+        allowed_platforms = _id_set(self._config.get("allowed_platforms"))
 
         # Reuse the same reason logic, but WITHOUT emitting a duplicate log line
         # (a diagnostic should not look like a denial in the log).
@@ -435,8 +461,9 @@ class WorkBuddyUsagePlugin(Star):
             f"群 ID: {group or '（私聊）'}",
             f"聊天类型: {chat_kind}",
             f"is_admin: {is_admin}",
-            f"allowed_qq_users: {'空' if not allowed_users else f'{len(allowed_users)} 项'}",
-            f"allowed_qq_groups: {'空' if not allowed_groups else f'{len(allowed_groups)} 项'}",
+            f"allowed_platforms: {'未限制' if not allowed_platforms else f'{len(allowed_platforms)} 项'}",
+            f"allowed_users: {'空' if not allowed_users else f'{len(allowed_users)} 项'}",
+            f"allowed_groups: {'空' if not allowed_groups else f'{len(allowed_groups)} 项'}",
             f"allow_private: {bool(self._config.get('allow_private', True))}",
             f"allow_admin: {bool(self._config.get('allow_admin', True))}",
         ]
