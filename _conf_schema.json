@@ -1,0 +1,74 @@
+{
+  "base_url": {
+    "type": "string",
+    "default": "http://127.0.0.1:8788",
+    "description": "WorkBuddy Hub 单实例源站（仅协议+主机+端口，不含路径/查询/凭据）；Hub 默认端口为 8788。此为可按部署环境修改的配置项，不允许在聊天中覆盖。"
+  },
+  "proxy": {
+    "type": "string",
+    "default": "",
+    "description": "可选的出站 HTTP/HTTPS 代理，用于访问 Hub，例如 http://127.0.0.1:8080；留空则直连。"
+  },
+  "panel_password": {
+    "type": "string",
+    "default": "admin",
+    "secret": true,
+    "description": "面板登录密码；默认值为 Hub 的出厂默认面板密码 admin，若运维侧修改了 Hub 面板密码，此配置必须同步修改。推荐的可续期认证方式；留空则仅可用 panel_token。"
+  },
+  "panel_token": {
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "description": "可选的预获取 X-Panel-Token；非空时优先使用，配置了密码时可在 401 后自动续期一次。"
+  },
+  "timeout_seconds": {
+    "type": "float",
+    "default": 15.0,
+    "description": "HTTP 总超时（秒），有效范围 1..120。"
+  },
+  "default_timezone": {
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "description": "用于计算当日 0 点边界的 IANA 时区名。"
+  },
+  "allowed_qq_users": {
+    "type": "list",
+    "default": [],
+    "description": "允许查询的 QQ 用户 ID（十进制字符串）；非管理员必须在此列表中。"
+  },
+  "allowed_qq_groups": {
+    "type": "list",
+    "default": [],
+    "description": "允许查询的 QQ 群 ID；群内非管理员查询要求发送者与群同时都在白名单。"
+  },
+  "allow_admin": {
+    "type": "bool",
+    "default": true,
+    "description": "允许 event.is_admin() 的管理员绕过 QQ 白名单（不能绕过平台限制）。"
+  },
+  "allow_private": {
+    "type": "bool",
+    "default": true,
+    "description": "是否允许私聊查询；管理员同样受此开关约束。"
+  },
+  "cooldown_seconds": {
+    "type": "int",
+    "default": 10,
+    "description": "同一发送者的查询间隔（秒），有效范围 0..3600。"
+  },
+  "max_message_chars": {
+    "type": "int",
+    "default": 1800,
+    "description": "单条消息正文最大字符数，有效范围 300..4000。"
+  },
+  "max_lines_per_message": {
+    "type": "int",
+    "default": 35,
+    "description": "单条消息最大行数，有效范围 5..100。"
+  },
+  "max_response_bytes": {
+    "type": "int",
+    "default": 5242880,
+    "description": "Hub JSON 响应最大字节数，超过即拒绝，有效范围 65536..52428800。"
+  }
+}
