@@ -82,6 +82,8 @@ class TestProbeAccountsFailureNonFatal:
             sys, "argv",
             ["probe_hub.py", "--base-url", stub_hub.base_url],
         )
+        # The probe reads WB_HUB_PASSWORD (else "admin"); match the StubHub.
+        monkeypatch.setenv("WB_HUB_PASSWORD", stub_hub.password)
         exit_code = await probe.main()
         captured = capsys.readouterr()
         assert exit_code == 0
