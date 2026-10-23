@@ -177,7 +177,7 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.7.24** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.7.24 之间**没有变更**；v1.7.24 的 `/accounts` 仅新增 `tasksEnabled` 布尔字段（本插件不渲染它），`Account._throttle_snapshot`（`modelCooldowns` 等）逐字节一致。
+- **WorkBuddy Hub**：契约按 **v1.7.33** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.7.33 之间**没有变更**；v1.7.33 的 `/accounts` 仅新增 `apiKey`（布尔值，仅表示是否配置了密钥，**不是**密钥本身）与 `credentialMask`（展示用掩码字符串）两个字段（本插件均不渲染），`Account._throttle_snapshot`（`modelCooldowns` 等）逐字节一致。另注：上游 v1.7.33 已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢

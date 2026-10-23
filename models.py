@@ -145,3 +145,13 @@ class DailyReport:
     # Cumulative (all-time) token consumption from summary.all_time.total_tokens.
     # None when the Hub payload has no all_time block — rendered as "—" never 0.
     total_tokens_all_time: int | None = None
+    # Number of analytics rows whose uid is NOT in the live pool
+    # (/accounts?realm=all) — i.e. accounts deleted from the pool. The pool is
+    # the authority for which accounts exist: such rows are pruned from the
+    # per-account list, and only a count line (已删除 N 个账号) is printed —
+    # consumption is NOT re-attributed to deleted accounts, because
+    # summary.window already folds ALL rows (including pruned ones), so their
+    # usage is inside 当日已消耗 Token/积分. Consumption vs roster are computed
+    # separately. These rows exist only for today, so the line disappears on
+    # its own the next day. 0 → nothing printed.
+    removed_accounts: int = 0

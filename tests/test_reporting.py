@@ -538,3 +538,143 @@ class TestAllTimeTokens:
 
     def test_all_time_non_mapping_block_treated_as_unavailable(self):
         assert "累计消耗 Token：—" in self._render("not-a-mapping")
+
+
+# ---------------------------------------------------------------------------
+# deleted-account pruning (v1.3.0)
+# ---------------------------------------------------------------------------
+
+
+class TestDeletedAccountPruning:
+    """Accounts deleted from the pool must vanish from the /wb list; the pool
+    is the authority for which accounts exist. Consumption vs roster are
+    computed separately: summary.window already folds all rows (including
+    pruned ones), so only a count line is printed."""
+
+    @staticmethod
+    def _accounts_payload(uids):
+        return {"accounts": [
+            {"uid": u, "nickname": f"n-{u}", "realm": "cn"} for u in uids
+        ]}
+
+    def _operator_shape(self):
+        # Operator's live shape: pool of 3, analytics with the same 3 in-pool,
+        # 3 deleted (all zero) and 1 placeholder row.
+        pool = ["aaaabbbb-aaaa", "ccccdddd-bbbb", "eeeeffff-cccc"]
+        analytics = [
+            make_account(u, f"n-{u}", "cn", make_stat(), {}, remain=Decimal("100"))
+            for u in pool
+        ] + [
+            make_account(f"{u}dddd", "deleted", "cn", make_stat(), {}, with_credits=False)
+            for u in ("11112222", "33334444", "55556666")
+        ] + [
+            make_account("(unattributed)", "(unattributed)", "", make_stat(), {}, with_credits=False),
+        ]
+        payload = make_analytics(analytics, [], make_stat())
+        return payload, self._accounts_payload(pool)
+
+    def test_operator_shape_exactly_three_listed_count_line(self):
+        payload, accounts_payload = self._operator_shape()
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload=accounts_payload)
+        text = format_report(report)
+        assert len(report.accounts) == 3
+        assert {a.uid[:8] for a in report.accounts} == {
+            "aaaabbbb", "ccccdddd", "eeeeffff"}
+        assert "已删除 3 个账号" in text
+        assert report.removed_accounts == 3
+        for gone in ("11112222", "33334444", "55556666"):
+            assert gone[:8] not in text
+        # zero-consumption placeholder → no 未归属消耗 line
+        assert "未归属消耗" not in text
+
+    def test_no_pruned_rows_no_line_and_byte_identical(self):
+        pool = ["u1", "u2"]
+        payload = make_analytics(
+            [make_account(u, f"n{u}", "cn", make_stat(total_tokens=10, credit=1.0), {},
+                          remain=Decimal("50")) for u in pool],
+            [], make_stat(total_tokens=20, credit=2.0),
+        )
+        accounts_payload = self._accounts_payload(pool)
+        pruned_run = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                               accounts_payload=accounts_payload)
+        legacy_run = aggregate(payload, date(2024, 3, 15), TZ, datetime.now())
+        assert pruned_run.removed_accounts == 0
+        assert "已删除" not in format_report(pruned_run)
+        # With nothing pruned, the report is byte-identical to the pre-v1.3.0
+        # behaviour.
+        assert format_report(pruned_run) == format_report(legacy_run)
+
+    def test_pruned_nonzero_consumption_only_count_no_warning(self):
+        pool = ["u1"]
+        analytics = [
+            make_account("u1", "n1", "cn", make_stat(total_tokens=100, credit=2.0), {},
+                         remain=Decimal("50")),
+            make_account("deleted-1", "del", "cn",
+                         make_stat(total_tokens=700, credit=3.5), {}, with_credits=False),
+        ]
+        payload = make_analytics(analytics, [],
+                                 make_stat(total_tokens=800, credit=5.5))
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload=self._accounts_payload(pool))
+        text = format_report(report)
+        assert len(report.accounts) == 1
+        assert report.accounts[0].uid == "u1"
+        assert "已删除 1 个账号" in text
+        assert "已删除账号消耗" not in text  # consumption is never re-attributed
+        assert "未归属消耗" not in text
+        assert report.warnings == ()  # reconciliation still folds all rows
+
+    def test_unattributed_and_deleted_lines_order(self):
+        pool = ["u1"]
+        analytics = [
+            make_account("u1", "n1", "cn", make_stat(), {}),
+            make_account("deleted-1", "del", "cn", make_stat(total_tokens=7, credit=0.1),
+                         {}, with_credits=False),
+            make_account("(unattributed)", "(unattributed)", "",
+                         make_stat(total_tokens=25, credit=0.5), {}, with_credits=False),
+        ]
+        payload = make_analytics(analytics, [],
+                                 make_stat(total_tokens=32, credit=0.6))
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload=self._accounts_payload(pool))
+        text = format_report(report)
+        assert "未归属消耗：0.5 积分 / 25 Token" in text
+        assert "已删除 1 个账号" in text
+        assert text.index("未归属消耗") < text.index("已删除 1 个账号") < text.index("使用模型统计：")
+
+    def test_accounts_unavailable_no_pruning_fallback(self):
+        payload, _ = self._operator_shape()
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload=None)
+        text = format_report(report)
+        # Fallback: nothing pruned, everything from analytics is listed.
+        assert len(report.accounts) == 6
+        assert report.removed_accounts == 0
+        assert "已删除" not in text
+
+    def test_disabled_but_in_pool_still_listed(self):
+        pool_entry = {"uid": "u1", "nickname": "n1", "realm": "cn", "enabled": False}
+        payload = make_analytics(
+            [make_account("u1", "n1", "cn", make_stat(total_tokens=5, credit=0.1), {})],
+            [], make_stat(total_tokens=5, credit=0.1),
+        )
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload={"accounts": [pool_entry]})
+        text = format_report(report)
+        assert len(report.accounts) == 1
+        assert "已停用" in text
+        assert "已删除" not in text
+
+    def test_placeholder_rows_not_counted_as_removed(self):
+        pool = ["u1"]
+        analytics = [
+            make_account("u1", "n1", "cn", make_stat(), {}),
+            make_account("(unattributed)", "(unattributed)", "", make_stat(), {}, with_credits=False),
+            make_account("(unknown)", "(unknown)", "", make_stat(), {}, with_credits=False),
+        ]
+        payload = make_analytics(analytics, [], make_stat())
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           accounts_payload=self._accounts_payload(pool))
+        assert report.removed_accounts == 0
+        assert "已删除" not in format_report(report)

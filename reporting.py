@@ -197,7 +197,12 @@ def aggregate(
         models.append(ModelUsage(model=mdl.get("model", "(unknown)"), credits=credits, tokens=tokens))
 
     # Extend the roster with /accounts-only rows (consumed 0), then sort.
-    accounts = merge_accounts_roster(accounts, payload, accounts_payload)
+    # When the live pool (/accounts?realm=all) is available it is the authority
+    # for which accounts exist: analytics rows for uids absent from the pool
+    # (deleted accounts) are pruned from the list and only counted.
+    accounts, removed_accounts = merge_accounts_roster(
+        accounts, payload, accounts_payload
+    )
     accounts = [_maybe_with_status(a, status_map) for a in accounts]
 
     # Sort: credits desc, then uid/model lexicographically.
@@ -229,6 +234,7 @@ def aggregate(
         excluded_credits=excluded_credit_sum,
         excluded_tokens=excluded_token_sum,
         total_tokens_all_time=total_tokens_all_time,
+        removed_accounts=removed_accounts,
     )
 
 
@@ -405,17 +411,47 @@ def merge_accounts_roster(
     report_accounts: list[AccountUsage],
     analytics_payload: AnalyticsPayload,
     accounts_payload: AccountsPayload | None,
-) -> list[AccountUsage]:
+) -> tuple[list[AccountUsage], int]:
     """Extend the roster so every account in /accounts?realm=all is listed.
 
     - analytics rows stay the primary source (consumed credits / remaining);
     - an account present only in /accounts is appended with consumed 0 and
       remaining from credits.remain;
     - placeholder uids ((unattributed)/(unknown)) are never listed;
+    - when the live pool (/accounts) is available it is the AUTHORITY for
+      which accounts exist: analytics rows for uids absent from the pool
+      (deleted accounts) are pruned from the list and counted. Disabled
+      accounts (enabled=false) that are still in the pool are kept.
+      Consumption vs roster are computed separately: summary.window folds ALL
+      analytics rows (including pruned ones), so a deleted account's usage is
+      already inside 当日已消耗 Token/积分 — nothing is re-attributed here,
+      and these rows only exist for today anyway;
+    - accounts_payload unavailable (None) → no pruning (fallback: today's
+      pre-v1.3.0 behaviour, count 0);
     - sort: consumed credits desc, then uid.
+
+    Returns (roster, removed_account_count).
     """
+    removed_accounts = 0
     listed_uids = {a.uid for a in report_accounts}
     if accounts_payload is not None:
+        pool_uids = {
+            entry.get("uid")
+            for entry in accounts_payload.get("accounts", ())
+            if isinstance(entry.get("uid"), str) and entry.get("uid")
+        }
+        # Prune analytics rows for uids the live pool no longer knows about.
+        # Placeholders are handled separately (never listed, folded into
+        # 未归属消耗), so they are not counted as removed here.
+        kept: list[AccountUsage] = []
+        for row in report_accounts:
+            if row.uid.strip().lower() in _PLACEHOLDER_UIDS:
+                kept.append(row)  # filtered out below, like before
+            elif row.uid in pool_uids:
+                kept.append(row)
+            else:
+                removed_accounts += 1
+        report_accounts = kept
         for entry in accounts_payload.get("accounts", ()):
             uid = entry.get("uid")
             if not isinstance(uid, str) or not uid or uid.strip().lower() in _PLACEHOLDER_UIDS:
@@ -450,7 +486,7 @@ def merge_accounts_roster(
     # echoed one back in /accounts.
     report_accounts = [a for a in report_accounts if a.uid.strip().lower() not in _PLACEHOLDER_UIDS]
     report_accounts.sort(key=lambda a: (-a.credits, a.uid))
-    return report_accounts
+    return report_accounts, removed_accounts
 
 
 def format_credit(value: Decimal) -> str:
@@ -495,6 +531,10 @@ def format_report(report: DailyReport) -> str:
             f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
             f"{_fmt_int(report.excluded_tokens)} Token"
         )
+    if report.removed_accounts:
+        # Deleted accounts: roster-only note. Their consumption is already in
+        # summary.window totals (consumption vs roster computed separately).
+        lines.append(f"已删除 {report.removed_accounts} 个账号")
     if report.models:
         lines.append("使用模型统计：")
         for m in report.models:
