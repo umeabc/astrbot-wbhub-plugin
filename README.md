@@ -161,7 +161,7 @@ WB_HUB_PASSWORD='<面板密码>' python tools/probe_hub.py \
 
 ## 实现要点
 
-- **「当日」以 Hub 的时钟为准**。Hub 的 HTTP 响应带标准 `Date` 头（UTC，无歧义），插件据此换算配置时区的日历日；即便 AstrBot 跑在 UTC 容器、或宿主机时钟漂移，窗口也不会错。
+- **「当日」以 Hub 的时钟为准，而且只用"刚刚这次响应"的时钟**。Hub 的 HTTP 响应带标准 `Date` 头（UTC，无歧义），插件据此换算配置时区的日历日；即便 AstrBot 跑在 UTC 容器、或宿主机时钟漂移，窗口也不会错。每次 `/wb` 先请求 `/accounts`（顺带取得本次响应的 `Date`）再计算窗口；超过 5 秒的旧 `Date` 一律不参与计算 —— 否则窗口会停在上一次查询的时刻，把"当时的用量"当成"现在的用量"重复报出来（v1.3.2 修复）。`/accounts` 不可用时退回本机时钟，再用 `/usage/analytics` 响应里的 `Date` 校正一次。
 - 响应体按固定大小**分块读到 EOF** 再解析（aiohttp 的 `read(n)` 在拿到部分缓冲时就会返回，单次大 `read` 会偶发截断）。
 - 积分以 `Decimal` 解析与聚合，聚合过程不取整，仅在显示时按 6 位小数四舍五入并去掉尾零。
 - `/accounts` 必须带 `realm=all`，否则 Hub 只返回当前区域的账号。
@@ -177,7 +177,7 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.8.0** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。已核对 `/usage/analytics` 在 v1.7.12 → v1.8.0 之间**没有变更**；v1.7.33 的 `/accounts` 仅新增 `apiKey`（布尔值，仅表示是否配置了密钥，**不是**密钥本身）与 `credentialMask`（展示用掩码字符串）两个字段（本插件均不渲染），`Account._throttle_snapshot`（`modelCooldowns` 等）逐字节一致。v1.8.0 相对 v1.7.33 **没有契约变更**：`/usage/analytics`、`/accounts`、`/updates`、`/updates/check`、`/panel/login` 的响应与字段完全一致，`runtime_settings_view()` 只多一个本插件不读的 `daily_chat_web_fallback_activity`；改动全部在网关内部（更新检查超时 5→10 秒、stderr 改为单写线程 + 2000 行队列、opt-in 的 `WB_DESKTOP_CHAT_COMPAT` 桌面端 chat 头、国际区每日活跃的证书失败回落，后两者**默认关闭**）。另注：上游 v1.7.33 已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
+- **WorkBuddy Hub**：契约按 **v1.9.2** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。`/usage/analytics` 在 v1.7.12 → v1.9.2 之间**没有任何改动**（逐 hunk 核对 `wb_proxy.py`）；`/updates`、`/updates/check` 与 `/panel/login` 的成功响应同样未变（v1.9.0 只在面板密码加密组件不可用时把登录改成返回 500，本插件按传输失败处理）。`/accounts` 方面，v1.9.0 起 `_throttle_snapshot()` 的 `cappedAt` 也会覆盖「付费模型撞 6004」的持久化标记（之前只有免费模型的 `model_caps` 会带）——插件本来就按 `cappedAt` 是否存在渲染 `{模型}额度用满，… 恢复`，因此只是显示得更准；`Account.public()` 未新增字段。v1.8.0 相对 v1.7.33 同样没有契约变更；v1.7.33 只多了 `apiKey`（布尔值，不是密钥本身）与 `credentialMask`（本插件均不渲染）。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢

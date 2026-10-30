@@ -41,6 +41,11 @@ from .reporting import (
 # obvious diagnostic.
 CLOCK_SKEW_WARN_SECONDS = 120
 
+# A captured Hub Date header is only evidence about the response that carried
+# it. Beyond this age it is treated as absent when building a time window, so
+# the previous /wb's instant can never become this report's `until`.
+HUB_CLOCK_FRESH_SECONDS = 5.0
+
 # Exact user-facing error strings (plan §4).
 ERR_UNAUTHORIZED = "无权查询 WorkBuddy 用量。"
 ERR_NOT_CONFIGURED = "WorkBuddy 查询未配置，请联系管理员。"
@@ -371,45 +376,85 @@ class WorkBuddyUsagePlugin(Star):
                 type(exc).__name__,
             )
 
+    def _fresh_hub_clock(self) -> Optional[datetime]:
+        """The Hub clock captured by the response we JUST received, or None.
+
+        ``client.hub_now()`` outlives the response that produced it, so using
+        it unconditionally builds the day window from the PREVIOUS /wb's
+        instant — minutes, or a whole day, old. That made the window end in
+        the past and /wb repeat the earlier report. Only a capture younger
+        than HUB_CLOCK_FRESH_SECONDS counts as evidence about "now".
+        """
+        client = self._client
+        if client is None:
+            return None
+        age = client.hub_now_age()
+        if age is None or age > HUB_CLOCK_FRESH_SECONDS:
+            return None
+        return client.hub_now()
+
     async def _get_report(self, now: datetime) -> DailyReport:
         """Fetch analytics for the local day containing "now" and aggregate.
 
-        "now" prefers the HUB's own clock (captured from an HTTP Date header):
-        the Hub timestamps every usage row, so its clock is the authority. If
-        the Hub clock is unavailable, fall back to the local-clock path.
+        The window is built from a FRESH Hub clock: /accounts is fetched
+        first, so its Date header (captured moments ago) is available before
+        since/until are chosen. The Hub timestamps every usage row, so its
+        clock — not the host process's — is the authority for "today". A
+        capture is only valid for its own response, so it is never reused
+        from an earlier /wb. If /accounts is unavailable, the local clock
+        provides a provisional window that the analytics Date corrects once.
         """
         assert self._client is not None
         tz_name = self._validate_timezone()
         tz = ZoneInfo(tz_name)
 
-        hub_now_utc = self._client.hub_now()
-        if hub_now_utc is not None:
-            self._warn_clock_skew(hub_now_utc)
-            since, until = day_bounds(hub_now_utc, tz_name)
-        else:
-            since, until = day_bounds(now, tz_name)
-        payload = await self._client.fetch_analytics(since, until)
-        # Second Hub call: per-account live state (cooldowns / breaker / etc).
+        # First Hub call: per-account live state (cooldowns / breaker / etc).
+        # It also donates the fresh Hub clock used for the window below.
         # MUST NEVER break /wb: any failure here degrades to no status info
         # (and no roster extension) with a logged warning.
         accounts_payload = None
         accounts_hub_now = None
         try:
             accounts_payload = await self._client.fetch_accounts()
-            # The /accounts response's own Date header is the base for the
-            # relative-seconds fields; fall back to the analytics-captured
-            # Hub clock, then to the local UTC clock (handled in reporting).
-            accounts_hub_now = (
-                self._client.hub_now()
-                if self._client.hub_now() is not None
-                else hub_now_utc
-            )
+            # This Date header is both the base for the relative-seconds
+            # fields (see reporting.status_segments) and the window's clock.
+            accounts_hub_now = self._fresh_hub_clock()
         except HubError as exc:
             logger.warning(
                 "workbuddy_usage: /accounts unavailable, report will omit "
                 "per-account status: %s",
                 type(exc).__name__,
             )
+
+        hub_now_utc = accounts_hub_now
+        if hub_now_utc is not None:
+            self._warn_clock_skew(hub_now_utc)
+            since, until = day_bounds(hub_now_utc, tz_name)
+        else:
+            # /accounts failed or sent no Date header: provisional window from
+            # the local clock, corrected below from the analytics response.
+            since, until = day_bounds(now, tz_name)
+
+        payload = await self._client.fetch_analytics(since, until)
+
+        # Degraded-path self-correction. The analytics response carries the
+        # Hub's Date too: if it disagrees about the calendar day (UTC-hosted
+        # AstrBot reporting a +08:00 day) or puts "now" more than the skew
+        # threshold past our provisional `until`, refetch ONCE with the Hub's
+        # authoritative window. The normal path never reaches this: /accounts
+        # already supplied a fresh clock.
+        if hub_now_utc is None:
+            fresh = self._fresh_hub_clock()
+            if fresh is not None:
+                self._warn_clock_skew(fresh)
+                hub_since, hub_until = day_bounds(fresh, tz_name)
+                if (
+                    hub_since != since
+                    or abs(hub_until - until) > CLOCK_SKEW_WARN_SECONDS
+                ):
+                    since, until = hub_since, hub_until
+                    payload = await self._client.fetch_analytics(since, until)
+                hub_now_utc = fresh
         # Gateway update notice: cheap GET /updates, derive the notice, and
         # (throttled) fire a background manual check. A failure here must
         # NEVER affect the report — degrade to no notice, log at info.
@@ -601,7 +646,12 @@ class WorkBuddyUsagePlugin(Star):
         local_now = datetime.now().astimezone()
         hub_now_utc = self._client.hub_now() if self._client is not None else None
         if hub_now_utc is not None:
-            hub_text = hub_now_utc.astimezone(tz).isoformat()
+            # Show how old the remembered capture is: /wbdiag is offline, so
+            # the value is whatever the last /wb (or background check) saw.
+            # Without the age a day-old clock reads like the current one.
+            age = self._client.hub_now_age() if self._client is not None else None
+            age_text = f"，采集于 {int(age)} 秒前" if age is not None else ""
+            hub_text = hub_now_utc.astimezone(tz).isoformat() + age_text
         else:
             hub_text = "未知（诊断不联网）"
         since, until = day_bounds(local_now, tz_name)

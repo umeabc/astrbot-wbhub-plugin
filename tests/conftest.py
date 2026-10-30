@@ -274,6 +274,7 @@ class StubHub:
         self.payload: dict[str, Any] = make_analytics()
         # behaviour knobs
         self.analytics_status = 200
+        self.analytics_date: str | None = None  # override the Date header
         self.analytics_body: Any = None  # override raw body (e.g. invalid JSON)
         self.body_bytes: bytes | None = None  # override fully (e.g. oversize)
         self.stream_body: bytes | None = None  # stream in chunks w/ yield points
@@ -341,7 +342,8 @@ class StubHub:
             return web.Response(body=self.body_bytes, content_type="application/json")
         if self.analytics_body is not None:
             return web.json_response(self.analytics_body, status=self.analytics_status)
-        return web.json_response(self.payload, status=self.analytics_status)
+        headers = {"Date": self.analytics_date} if self.analytics_date else {}
+        return web.json_response(self.payload, status=self.analytics_status, headers=headers)
 
     async def _accounts(self, request: web.Request) -> web.Response:
         self.accounts_calls.append(

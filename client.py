@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone as dt_timezone
 from email.utils import parsedate_to_datetime
 from decimal import Decimal, InvalidOperation
@@ -320,10 +321,16 @@ class WorkBuddyClient:
         # Serializes login so concurrent commands do not race token renewal.
         self._login_lock = asyncio.Lock()
         # The Hub's own clock, captured from the RFC 7231 Date header of the
-        # last response that carried one (login or analytics). The Hub
-        # timestamps every usage row, so its clock — not the host process's —
-        # is the authority for "today". None until first captured.
+        # last response that carried one (login/analytics/accounts/updates).
+        # The Hub timestamps every usage row, so its clock — not the host
+        # process's — is the authority for "today". None until first captured.
+        # _hub_now_monotonic records WHEN it was captured (monotonic seconds):
+        # a Date header is only evidence about the instant of ITS response.
+        # Reusing it later (e.g. the previous /wb, minutes or a day ago)
+        # silently builds a window that ends in the past; callers that build
+        # a time window must use hub_now_age() to reject stale captures.
         self._hub_now: datetime | None = None
+        self._hub_now_monotonic: float | None = None
 
     # -- low level helpers ---------------------------------------------------
 
@@ -381,16 +388,33 @@ class WorkBuddyClient:
     def hub_now(self) -> datetime | None:
         """The Hub's clock captured from an HTTP Date header, tz-aware UTC.
 
+        This is the LAST captured value, not necessarily a current one: it
+        survives between responses (and between /wb calls). A window built
+        from a stale capture ends in the past and re-reports old totals, so
+        window builders must check hub_now_age() first.
+
         None until a response with a parseable Date header has been seen
         (never raises; callers must fall back to the local clock).
         """
         return self._hub_now
+
+    def hub_now_age(self) -> float | None:
+        """Seconds elapsed since hub_now() was captured (None if never).
+
+        Used to tell a Date header from the response we just received apart
+        from one left behind by an earlier request — the distinction the
+        stale-window bug depended on.
+        """
+        if self._hub_now_monotonic is None:
+            return None
+        return max(0.0, time.monotonic() - self._hub_now_monotonic)
 
     def _capture_hub_date(self, resp: aiohttp.ClientResponse) -> None:
         """Capture the Hub's Date header if present and parseable."""
         parsed = parse_http_date_header(resp.headers.get("Date"))
         if parsed is not None:
             self._hub_now = parsed
+            self._hub_now_monotonic = time.monotonic()
 
     async def login(self) -> str:
         """POST /panel/login; returns the session token (memory only)."""
