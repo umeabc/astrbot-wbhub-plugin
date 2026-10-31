@@ -329,6 +329,14 @@ def aggregate(
     accounts = merge_accounts_roster(accounts, payload, accounts_payload)
     accounts = [_maybe_with_status(a, status_map) for a in accounts]
 
+    # Pool balance: every known credits.remain, summed. Idle accounts stay in
+    # the roster (they are not listed if they consumed nothing) so their
+    # balance still counts; deleted accounts have no balance object at all.
+    known_balances = [a.remaining for a in accounts if a.remaining is not None]
+    available_credits = (
+        sum(known_balances, Decimal("0")) if known_balances else None
+    )
+
     # Sort: credits desc, then uid/model lexicographically.
     accounts.sort(key=lambda a: (-a.credits, a.uid))
     models.sort(key=lambda m: (-m.credits, m.model))
@@ -361,6 +369,7 @@ def aggregate(
         range_label=range_label,
         range_start=range_start,
         range_end=range_end,
+        available_credits=available_credits,
         detailed=detailed,
     )
 
@@ -577,6 +586,10 @@ def merge_accounts_roster(
         for row in report_accounts:
             if row.uid.strip().lower() in _PLACEHOLDER_UIDS or row.uid in pool_uids:
                 marked.append(row)
+            elif row.credits == 0:
+                # Deleted AND nothing consumed in this window: no information
+                # to show, and an "已消耗 0 积分" line would only take space.
+                continue
             else:
                 marked.append(
                     dataclasses_replace(row, deleted=True, status="已删除")
@@ -661,6 +674,12 @@ def format_report(report: DailyReport) -> str:
         "—" if report.total_tokens_all_time is None
         else _fmt_int(report.total_tokens_all_time)
     )
+    # Current pool balance, directly under the cumulative line. "—" when no
+    # account reported a balance (0 would claim the pool is empty).
+    available_line = "可用积分：" + (
+        "—" if report.available_credits is None
+        else format_credit(report.available_credits)
+    )
     if report.range_label:
         lines = [
             f"WorkBuddy {report.range_label}用量",
@@ -670,6 +689,7 @@ def format_report(report: DailyReport) -> str:
         ]
         if report.detailed:
             lines.append(all_time_line)
+            lines.append(available_line)
     else:
         lines = [
             "WorkBuddy 当日用量",
@@ -677,6 +697,7 @@ def format_report(report: DailyReport) -> str:
             f"当日已消耗 Token：{_fmt_int(report.total_tokens)}",
             f"当日已消耗积分：{format_credit(report.total_credits)}",
             all_time_line,
+            available_line,
         ]
     if report.accounts:
         lines.append(f"账号（{len(report.accounts)}）：")

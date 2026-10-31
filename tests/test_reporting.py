@@ -213,14 +213,16 @@ class TestFormat:
             models=(models_mod.ModelUsage(
                 model="model-a", credits=Decimal("2.0"), tokens=1100),),
             warnings=("示例警告。",),
+            available_credits=Decimal("497.5"),
         )
         text = format_report(report)
-        assert text.splitlines()[:6] == [
+        assert text.splitlines()[:7] == [
             "WorkBuddy 当日用量",
             "2024-03-15",
             "当日已消耗 Token：1,234,567",
             "当日已消耗积分：12.5",
             "累计消耗 Token：—",
+            "可用积分：497.5",
             "账号（1）：",
         ]
         assert "u1 [intl]：已消耗 2.5 积分，剩余 497.5 积分" in text
@@ -509,9 +511,11 @@ class TestAllTimeTokens:
         lines = text.split("\n")
         idx_credits = lines.index("当日已消耗积分：1")
         idx_all_time = lines.index("累计消耗 Token：981,527,465")
+        idx_available = next(i for i, l in enumerate(lines) if l.startswith("可用积分："))
         idx_accounts = next(i for i, l in enumerate(lines) if l.startswith("账号（"))
         assert idx_all_time == idx_credits + 1
-        assert idx_accounts == idx_all_time + 1
+        assert idx_available == idx_all_time + 1
+        assert idx_accounts == idx_available + 1
 
     def test_all_time_value_is_comma_formatted(self):
         assert "累计消耗 Token：1,234,567" in self._render(make_stat(total_tokens=1234567, credit=1.0))
@@ -538,6 +542,62 @@ class TestAllTimeTokens:
 
     def test_all_time_non_mapping_block_treated_as_unavailable(self):
         assert "累计消耗 Token：—" in self._render("not-a-mapping")
+
+
+# ---------------------------------------------------------------------------
+# pool balance (v1.3.5)
+# ---------------------------------------------------------------------------
+
+
+class TestAvailableCredits:
+    def _report(self, analytics, accounts_payload=None, summary=None):
+        payload = make_analytics(analytics, [], summary or make_stat())
+        return aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                         accounts_payload=accounts_payload)
+
+    def test_sums_every_known_remaining_balance(self):
+        analytics = [
+            make_account("u1", "n1", "cn", make_stat(credit=1.0), {}, remain=Decimal("100.25")),
+            make_account("u2", "n2", "cn", make_stat(credit=0.5), {}, remain=Decimal("50")),
+        ]
+        report = self._report(analytics, summary=make_stat(credit=1.5))
+        assert report.available_credits == Decimal("150.25")
+        assert "可用积分：150.25" in format_report(report)
+
+    def test_pool_only_accounts_contribute_their_balance(self):
+        # u2 exists only in /accounts (nothing consumed); its balance still
+        # counts toward the pool total.
+        analytics = [make_account("u1", "n1", "cn", make_stat(credit=1.0), {},
+                                  remain=Decimal("10"))]
+        accounts_payload = {"accounts": [
+            {"uid": "u1", "credits": {"remain": 10.0}},
+            {"uid": "u2", "credits": {"remain": 5.0}},
+        ]}
+        report = self._report(analytics, accounts_payload, make_stat(credit=1.0))
+        assert report.available_credits == Decimal("15")
+        assert "可用积分：15" in format_report(report)
+
+    def test_unknown_balances_are_dash_not_zero(self):
+        analytics = [make_account("u1", "n1", "cn", make_stat(credit=1.0), {},
+                                  with_credits=False)]
+        report = self._report(analytics, summary=make_stat(credit=1.0))
+        assert report.available_credits is None
+        text = format_report(report)
+        assert "可用积分：—" in text
+        assert "可用积分：0" not in text
+
+    def test_line_disappears_when_the_view_is_compact(self):
+        analytics = [make_account("u1", "n1", "cn", make_stat(credit=1.0), {},
+                                  remain=Decimal("10"))]
+        payload = make_analytics(analytics, [], make_stat(credit=1.0))
+        report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
+                           range_label="近 7 天",
+                           range_start=datetime(2024, 3, 9, tzinfo=ZoneInfo(TZ)),
+                           range_end=datetime(2024, 3, 15, 12, tzinfo=ZoneInfo(TZ)),
+                           detailed=False)
+        text = format_report(report)
+        assert "可用积分" not in text
+        assert "累计消耗 Token" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -572,18 +632,16 @@ class TestDeletedAccountsListed:
         payload = make_analytics(analytics, [], make_stat())
         return payload, self._accounts_payload(pool)
 
-    def test_deleted_rows_are_listed_and_marked(self):
+    def test_zero_consumption_deleted_rows_are_dropped(self):
+        # v1.3.5: a deleted account that consumed nothing in the window has
+        # nothing to report, so it does not get an "已消耗 0 积分" line.
         payload, accounts_payload = self._operator_shape()
         report = aggregate(payload, date(2024, 3, 15), TZ, datetime.now(),
                            accounts_payload=accounts_payload)
         text = format_report(report)
-        assert len(report.accounts) == 6
-        deleted = [a for a in report.accounts if a.deleted]
-        assert {a.uid[:8] for a in deleted} == {"11112222", "33334444", "55556666"}
-        assert all(a.status == "已删除" for a in deleted)
-        assert all(a.remaining is None for a in deleted)
-        assert text.count("【已删除】") == 3
-        assert "已删除 3 个账号" not in text     # the count line is gone
+        assert len(report.accounts) == 3
+        assert not any(a.deleted for a in report.accounts)
+        assert "已删除" not in text
         assert "未归属消耗" not in text          # zero-usage placeholder
 
     def test_deleted_rows_sort_with_the_rest(self):

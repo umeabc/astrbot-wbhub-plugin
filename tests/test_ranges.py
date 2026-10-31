@@ -484,6 +484,17 @@ class TestDetailedViews:
         text = text_of(await run(plugin, "/wb 30"))
         assert "凭证过期" in text
 
+    async def test_pool_balance_line_in_detailed_views_only(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        for arg in ("", "0", "1"):
+            text = text_of(await run(plugin, f"/wb {arg}".strip()))
+            lines = text.splitlines()
+            idx = next(i for i, l in enumerate(lines) if l.startswith("累计消耗 Token"))
+            assert lines[idx + 1] == "可用积分：42.5", arg
+        assert "可用积分" not in text_of(await run(plugin, "/wb 3"))
+
     async def test_model_line_reports_tokens_and_credits(self, stub_hub, session):
         self.setup_stub(stub_hub)
         plugin = make_plugin()

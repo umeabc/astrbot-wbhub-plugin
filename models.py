@@ -158,8 +158,14 @@ class DailyReport:
     range_label: str = ""
     range_start: datetime | None = None
     range_end: datetime | None = None
+    # Sum of every account's remaining balance (credits.remain) in the same
+    # payload. None when NO account exposed a balance — rendered as "—", never
+    # as 0, because "unknown" and "spent to zero" are different facts. Only the
+    # detailed views (/wb, /wb 0, /wb 1) print it.
+    available_credits: Decimal | None = None
     # True for the three "current state" views (/wb, /wb 0, /wb 1): those also
-    # print the cumulative token total, each account's remaining balance and
-    # the 429 / risk-control status. Wider windows print consumption only —
-    # a month of usage next to a momentary cooldown reads as one snapshot.
+    # print the cumulative token total, the pool balance, each account's
+    # remaining balance and the 429 / risk-control status. Wider windows print
+    # consumption only — a month of usage next to a momentary cooldown reads as
+    # one snapshot.
     detailed: bool = True
