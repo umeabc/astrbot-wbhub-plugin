@@ -119,6 +119,12 @@ class AccountUsage:
     # "熔断，10-17 15:23 恢复；deepseek-v4.1-flash被429，10-17 14:50 恢复".
     # Empty string for normal accounts → nothing is printed (no parentheses).
     status: str = ""
+    # True for a row whose uid is no longer in the live pool
+    # (/accounts?realm=all) but which DID consume something in the queried
+    # window. Such rows are listed (marked 已删除) instead of being pruned, so
+    # a multi-day total can be explained account by account. Their balance is
+    # unknown → no 剩余 column, and they are not "current" accounts.
+    deleted: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,23 +151,15 @@ class DailyReport:
     # Cumulative (all-time) token consumption from summary.all_time.total_tokens.
     # None when the Hub payload has no all_time block — rendered as "—" never 0.
     total_tokens_all_time: int | None = None
-    # Number of analytics rows whose uid is NOT in the live pool
-    # (/accounts?realm=all) — i.e. accounts deleted from the pool. The pool is
-    # the authority for which accounts exist: such rows are pruned from the
-    # per-account list, and only a count line (已删除 N 个账号) is printed —
-    # consumption is NOT re-attributed to deleted accounts, because
-    # summary.window already folds ALL rows (including pruned ones), so their
-    # usage is inside 当日已消耗 Token/积分. Consumption vs roster are computed
-    # separately. These rows exist only for today, so the line disappears on
-    # its own the next day. 0 → nothing printed.
-    removed_accounts: int = 0
-    # Non-default window (/wb 3|7|30|week|month|all). "" keeps the legacy
+    # Non-default window (/wb 1|3|7|30|week|month|all). "" keeps the legacy
     # single-day template byte-identical; otherwise the label prefixes the
-    # header and the two consumption lines, and the window is printed as a
-    # date range. range_start is None for the all-time window ("有记录以来").
+    # header and the two consumption lines. range_start is None for the
+    # all-time window ("有记录以来").
     range_label: str = ""
     range_start: datetime | None = None
     range_end: datetime | None = None
-    # False for the all-time window: there the window total IS the cumulative
-    # total, and printing both would duplicate the same number.
-    include_all_time: bool = True
+    # True for the three "current state" views (/wb, /wb 0, /wb 1): those also
+    # print the cumulative token total, each account's remaining balance and
+    # the 429 / risk-control status. Wider windows print consumption only —
+    # a month of usage next to a momentary cooldown reads as one snapshot.
+    detailed: bool = True

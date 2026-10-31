@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from astrbot_plugin_workbuddy_usage.models import DailyReport
+from conftest import make_account, make_analytics, make_model, make_stat
+
 from astrbot_plugin_workbuddy_usage.reporting import (
     RANGE_ALL,
     RANGE_MONTH,
@@ -59,6 +61,14 @@ class TestParseRangeArg:
         assert spec.label == f"近 {n} 天"
         assert not spec.is_default and not spec.is_all_time
 
+    def test_zero_is_the_default_and_one_is_a_day_window(self):
+        assert parse_range_arg("0") is RANGE_TODAY
+        one = parse_range_arg("1")
+        assert one.key == "1" and one.label == "近 1 天"
+        assert one.is_detailed          # /wb 1 keeps the current-state block
+        assert not parse_range_arg("3").is_detailed
+        assert RANGE_TODAY.is_detailed
+
     def test_named_windows(self):
         assert parse_range_arg("week") is RANGE_WEEK
         assert parse_range_arg("Month") is RANGE_MONTH
@@ -70,7 +80,7 @@ class TestParseRangeArg:
         with pytest.raises(HelpRequested):
             parse_range_arg(token)
 
-    @pytest.mark.parametrize("token", ["5", "0", "1", "31", "365", "abc", "weeks", "今天", "3d"])
+    @pytest.mark.parametrize("token", ["2", "5", "31", "365", "abc", "weeks", "今天", "3d"])
     def test_everything_else_is_rejected(self, token):
         with pytest.raises(BadRange) as exc:
             parse_range_arg(token)
@@ -91,6 +101,7 @@ class TestRangeBounds:
     @pytest.mark.parametrize(
         "token, first_day",
         [
+            ("1", date(2026, 10, 28)),   # today only
             ("3", date(2026, 10, 26)),   # today + 2 previous days
             ("7", date(2026, 10, 22)),
             ("30", date(2026, 9, 29)),
@@ -188,7 +199,7 @@ class TestRangeRendering:
             range_label="全部时间",
             range_start=None,
             range_end=datetime(2026, 10, 28, 15, tzinfo=TZ_OBJ),
-            include_all_time=False,
+            detailed=False,
         )
         lines = format_report(report).splitlines()
         assert lines[0] == "WorkBuddy 全部时间用量"
@@ -380,3 +391,125 @@ class TestCommandArgs:
         # (which serves an empty payload) exactly as they are for today.
         assert "账号：" in text
         assert "使用模型统计：" in text
+
+
+# ---------------------------------------------------------------------------
+# v1.3.4: which views print current-state extras
+# ---------------------------------------------------------------------------
+
+
+def detailed_payload():
+    """One account (with a balance) and one model, both with real usage."""
+    acct = make_account(
+        "aaaa1111", "n", "cn",
+        make_stat(total_tokens=1200, credit=2.5), {}, remain=42.5,
+    )
+    model = make_model("model-x", make_stat(total_tokens=900, credit=1.75))
+    return make_analytics([acct], [model], make_stat(total_tokens=1200, credit=2.5))
+
+
+def live_accounts_body():
+    """The same account plus a live per-model 429 (absolute expiry)."""
+    return {"accounts": [{
+        "uid": "aaaa1111",
+        "nickname": "n",
+        "realm": "cn",
+        "credits": {"remain": 42.5},
+        "cooldownFor": 300,
+        "inCooldown": True,
+        "modelCooldowns": [{"model": "model-x", "expiresAt": int(time.time()) + 600}],
+    }]}
+
+
+class TestDetailedViews:
+    """ /wb, /wb 0 and /wb 1 show 累计 / 剩余 / 429; wider windows do not. """
+
+    def setup_stub(self, stub_hub):
+        stub_hub.payload = detailed_payload()
+        stub_hub.accounts_body = live_accounts_body()
+
+    async def test_default_view_has_the_current_state_block(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, "/wb"))
+        assert "累计消耗 Token：" in text
+        assert "剩余 42.5 积分" in text
+        assert "model-x被429" in text
+        assert "冷却，" in text
+
+    async def test_zero_is_identical_to_the_default(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        zero = text_of(await run(plugin, "/wb 0"))
+        default = text_of(await run(plugin, "/wb"))
+        assert zero == default
+
+    async def test_one_day_window_keeps_them(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, "/wb 1"))
+        lines = text.splitlines()
+        assert lines[0] == "WorkBuddy 近 1 天用量"
+        assert lines[1] == datetime.now(TZ_OBJ).date().isoformat()
+        assert "累计消耗 Token：" in text
+        assert "剩余 42.5 积分" in text
+        assert "model-x被429" in text
+
+    async def test_wider_window_hides_all_three(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        for arg in ("3", "7", "30", "week", "month", "all"):
+            stub_hub.analytics_calls.clear()
+            text = text_of(await run(plugin, f"/wb {arg}"))
+            assert "累计消耗 Token" not in text, arg
+            assert "剩余" not in text, arg
+            assert "被429" not in text and "额度用满" not in text, arg
+            assert "冷却，" not in text, arg
+            assert "近" in text or "本周" in text or "本月" in text or "全部" in text
+
+    async def test_structural_status_is_kept_in_wide_windows(self, stub_hub, session):
+        # Expired credentials are a structural fact, not a timed recovery
+        # state: wide windows still surface them.
+        self.setup_stub(stub_hub)
+        stub_hub.accounts_body = {"accounts": [{
+            "uid": "aaaa1111", "nickname": "n", "realm": "cn",
+            "tokenExpired": True,
+        }]}
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, "/wb 30"))
+        assert "凭证过期" in text
+
+    async def test_model_line_reports_tokens_and_credits(self, stub_hub, session):
+        self.setup_stub(stub_hub)
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, "/wb 3"))
+        assert "model-x：900 Token / 1.75 积分" in text
+
+    async def test_deleted_account_rows_appear_with_marker(self, stub_hub, session):
+        stub_hub.payload = make_analytics(
+            [
+                make_account("aaaa1111", "n", "cn",
+                             make_stat(total_tokens=100, credit=3.0), {},
+                             remain=10.0),
+                make_account("dead0000", "gone", "cn",
+                             make_stat(total_tokens=50, credit=1.0), {},
+                             with_credits=False),
+            ],
+            [], make_stat(total_tokens=150, credit=4.0),
+        )
+        stub_hub.accounts_body = {"accounts": [{
+            "uid": "aaaa1111", "nickname": "n", "realm": "cn",
+            "credits": {"remain": 10.0},
+        }]}
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, "/wb 7"))
+        assert "【已删除】" in text
+        assert "已删除 1 个账号" not in text
+        assert "dead0000" in text

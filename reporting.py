@@ -97,15 +97,28 @@ class RangeSpec:
     def is_all_time(self) -> bool:
         return self.key == "all"
 
+    @property
+    def is_detailed(self) -> bool:
+        """True for the three views that also show current-state info.
+
+        /wb and /wb 0 (key "today") and /wb 1 share the same day-long window
+        and print the cumulative total, the per-account balance and the
+        429 / risk-control status; every wider window prints consumption only.
+        """
+        return self.key in ("today", "1")
+
 
 RANGE_TODAY = RangeSpec("today", "当日")
 RANGE_ALL = RangeSpec("all", "全部时间")
 RANGE_WEEK = RangeSpec("week", "本周")
 RANGE_MONTH = RangeSpec("month", "本月")
 
-_ROLLING_DAYS = {str(n): RangeSpec(str(n), f"近 {n} 天") for n in (3, 7, 30)}
+_ROLLING_DAYS = {str(n): RangeSpec(str(n), f"近 {n} 天") for n in (1, 3, 7, 30)}
 _RANGE_BY_TOKEN = {
     "": RANGE_TODAY,
+    # "0" is an explicit spelling of the default: identical output, including
+    # the cumulative/balance/429 block that /wb 1 and wider windows omit.
+    "0": RANGE_TODAY,
     "today": RANGE_TODAY,
     "week": RANGE_WEEK,
     "month": RANGE_MONTH,
@@ -180,7 +193,7 @@ def aggregate(
     range_label: str = "",
     range_start: datetime | None = None,
     range_end: datetime | None = None,
-    include_all_time: bool = True,
+    detailed: bool = True,
 ) -> DailyReport:
     """Build a DailyReport from a validated analytics payload.
 
@@ -197,7 +210,12 @@ def aggregate(
       (Hub-status unavailable) — the report still renders, without status.
     - range_label/range_start/range_end describe a non-default window (see
       RangeSpec); the default leaves the label empty and renders the
-      original single-day template.
+      original single-day template;
+    - rows for accounts that left the pool are KEPT and flagged deleted (see
+      merge_accounts_roster) so a multi-day total can be explained;
+    - detailed=False suppresses the current-state extras (cumulative total,
+      per-account balance, 429 / risk-control status) — those are rendered by
+      format_report from this flag.
     """
     warnings: list[str] = []
     summary_window = payload.get("summary", {}).get("window", {})
@@ -235,7 +253,9 @@ def aggregate(
             if not isinstance(uid, str) or not uid:
                 continue
             try:
-                status_map[uid] = status_segments(entry, timezone, hub_now)
+                status_map[uid] = status_segments(
+                    entry, timezone, hub_now, include_live_state=detailed
+                )
             except Exception:  # noqa: BLE001 - status is best-effort
                 logger.warning("workbuddy_usage: status rendering failed for %s", uid)
 
@@ -303,12 +323,10 @@ def aggregate(
         models.append(ModelUsage(model=mdl.get("model", "(unknown)"), credits=credits, tokens=tokens))
 
     # Extend the roster with /accounts-only rows (consumed 0), then sort.
-    # When the live pool (/accounts?realm=all) is available it is the authority
-    # for which accounts exist: analytics rows for uids absent from the pool
-    # (deleted accounts) are pruned from the list and only counted.
-    accounts, removed_accounts = merge_accounts_roster(
-        accounts, payload, accounts_payload
-    )
+    # Analytics rows for uids absent from the live pool are kept and marked
+    # 已删除 (v1.3.4): they consumed part of the window's total, so dropping
+    # them left the list unable to explain the number above it.
+    accounts = merge_accounts_roster(accounts, payload, accounts_payload)
     accounts = [_maybe_with_status(a, status_map) for a in accounts]
 
     # Sort: credits desc, then uid/model lexicographically.
@@ -340,11 +358,10 @@ def aggregate(
         excluded_credits=excluded_credit_sum,
         excluded_tokens=excluded_token_sum,
         total_tokens_all_time=total_tokens_all_time,
-        removed_accounts=removed_accounts,
         range_label=range_label,
         range_start=range_start,
         range_end=range_end,
-        include_all_time=include_all_time,
+        detailed=detailed,
     )
 
 
@@ -378,11 +395,20 @@ def status_segments(
     account: Mapping[str, Any],
     tz_name: str,
     hub_now: datetime | None,
+    include_live_state: bool = True,
 ) -> str:
     """Build the per-account STATUS text from /accounts live state.
 
     Returns "" for a normal account (nothing is printed). Segments are in the
-    documented order and joined with '；'; the caller wraps them in (…).
+    documented order and joined with '；'; the caller wraps them in 【…】.
+
+    include_live_state=False drops every segment that carries a *recovery
+    time* — upstream risk control (11140), breaker, degrade, account
+    cooldown, per-model 429 / 6004 quota — plus the "近期429" history
+    fallback. Structural facts stay: expired credential, disabled, the three
+    stop flags, disabled models and the failure streak. Wider /wb windows
+    use that: a month of usage should not be decorated with a cooldown that
+    expires in ten minutes.
 
     UNITS: cooldownFor / breakerFor / degradeFor are RELATIVE seconds (base =
     the /accounts response's Hub clock, falling back to the local UTC clock
@@ -415,24 +441,25 @@ def status_segments(
         segments.append("已停用")
     # 3. restrictedFor → 上游风控限制，{time} 恢复. v1.7.19 added this
     #    RELATIVE-seconds field (upstream account-level risk control,
-    #    code 11140); it outranks a self-inflicted breaker.
-    if (t := rel(account.get("restrictedFor"))) is not None:
+    #    code 11140); it outranks a self-inflicted breaker. A 429/风控
+    #    segment: omitted from wide windows.
+    if include_live_state and (t := rel(account.get("restrictedFor"))) is not None:
         segments.append(f"上游风控限制，{t} 恢复")
     # 4. breakerFor → 熔断，{time} 恢复
-    if (t := rel(account.get("breakerFor"))) is not None:
+    if include_live_state and (t := rel(account.get("breakerFor"))) is not None:
         segments.append(f"熔断，{t} 恢复")
     # 3. degradeFor → 降级，{time} 恢复
-    if (t := rel(account.get("degradeFor"))) is not None:
+    if include_live_state and (t := rel(account.get("degradeFor"))) is not None:
         segments.append(f"降级，{t} 恢复")
     # 4. cooldownFor / inCooldown → 冷却，{time} 恢复
-    t = rel(account.get("cooldownFor"))
-    if t is None and account.get("inCooldown") is True:
+    t = rel(account.get("cooldownFor")) if include_live_state else None
+    if t is None and include_live_state and account.get("inCooldown") is True:
         t = _fmt_rel_time(0, base, tz)  # deadline within the current second
     if t is not None:
         segments.append(f"冷却，{t} 恢复")
     # 5. modelCooldowns entries → {model}被429，{t} 恢复, or with cappedAt:
     #    {model}额度用满，{t} 恢复 (time from expiresAt, ABSOLUTE epoch)
-    cooldowns = account.get("modelCooldowns")
+    cooldowns = account.get("modelCooldowns") if include_live_state else None
     if isinstance(cooldowns, list):
         for entry in cooldowns:
             if not isinstance(entry, Mapping):
@@ -495,11 +522,12 @@ def status_segments(
             status_m = re.search(r"HTTP\s+(\d{3})", last_error)
             code_m = re.search(r'"code"\s*[:=]\s*(\d+)', last_error)
             if status_m and status_m.group(1) == "429":
-                if code_m:
-                    text = f"近期429（code {code_m.group(1)}，当前未限制）"
-                else:
-                    text = "近期429（当前未限制）"
-                segments.append(text[:80])
+                if include_live_state:
+                    if code_m:
+                        text = f"近期429（code {code_m.group(1)}，当前未限制）"
+                    else:
+                        text = "近期429（当前未限制）"
+                    segments.append(text[:80])
             elif status_m:
                 segments.append(f"最近错误 {status_m.group(1)}（当前未限制）"[:80])
     return "；".join(segments)
@@ -521,28 +549,23 @@ def merge_accounts_roster(
     report_accounts: list[AccountUsage],
     analytics_payload: AnalyticsPayload,
     accounts_payload: AccountsPayload | None,
-) -> tuple[list[AccountUsage], int]:
+) -> list[AccountUsage]:
     """Extend the roster so every account in /accounts?realm=all is listed.
 
     - analytics rows stay the primary source (consumed credits / remaining);
     - an account present only in /accounts is appended with consumed 0 and
       remaining from credits.remain;
     - placeholder uids ((unattributed)/(unknown)) are never listed;
-    - when the live pool (/accounts) is available it is the AUTHORITY for
-      which accounts exist: analytics rows for uids absent from the pool
-      (deleted accounts) are pruned from the list and counted. Disabled
-      accounts (enabled=false) that are still in the pool are kept.
-      Consumption vs roster are computed separately: summary.window folds ALL
-      analytics rows (including pruned ones), so a deleted account's usage is
-      already inside 当日已消耗 Token/积分 — nothing is re-attributed here,
-      and these rows only exist for today anyway;
-    - accounts_payload unavailable (None) → no pruning (fallback: today's
-      pre-v1.3.0 behaviour, count 0);
+    - when the live pool (/accounts) is available it is the authority for
+      which accounts exist. Analytics rows for uids the pool no longer knows
+      (accounts deleted mid-window) are KEPT and flagged deleted, with the
+      已删除 marker: their consumption is inside summary.window, so pruning
+      them left the list unable to explain the total. This is the v1.3.4
+      behaviour; v1.3.0-v1.3.3 pruned them and printed a count line instead;
+    - disabled accounts (enabled=false) that are still in the pool are kept;
+    - accounts_payload unavailable (None) → nothing is marked deleted;
     - sort: consumed credits desc, then uid.
-
-    Returns (roster, removed_account_count).
     """
-    removed_accounts = 0
     listed_uids = {a.uid for a in report_accounts}
     if accounts_payload is not None:
         pool_uids = {
@@ -550,18 +573,15 @@ def merge_accounts_roster(
             for entry in accounts_payload.get("accounts", ())
             if isinstance(entry.get("uid"), str) and entry.get("uid")
         }
-        # Prune analytics rows for uids the live pool no longer knows about.
-        # Placeholders are handled separately (never listed, folded into
-        # 未归属消耗), so they are not counted as removed here.
-        kept: list[AccountUsage] = []
+        marked: list[AccountUsage] = []
         for row in report_accounts:
-            if row.uid.strip().lower() in _PLACEHOLDER_UIDS:
-                kept.append(row)  # filtered out below, like before
-            elif row.uid in pool_uids:
-                kept.append(row)
+            if row.uid.strip().lower() in _PLACEHOLDER_UIDS or row.uid in pool_uids:
+                marked.append(row)
             else:
-                removed_accounts += 1
-        report_accounts = kept
+                marked.append(
+                    dataclasses_replace(row, deleted=True, status="已删除")
+                )
+        report_accounts = marked
         for entry in accounts_payload.get("accounts", ()):
             uid = entry.get("uid")
             if not isinstance(uid, str) or not uid or uid.strip().lower() in _PLACEHOLDER_UIDS:
@@ -596,7 +616,7 @@ def merge_accounts_roster(
     # echoed one back in /accounts.
     report_accounts = [a for a in report_accounts if a.uid.strip().lower() not in _PLACEHOLDER_UIDS]
     report_accounts.sort(key=lambda a: (-a.credits, a.uid))
-    return report_accounts, removed_accounts
+    return report_accounts
 
 
 def format_credit(value: Decimal) -> str:
@@ -613,20 +633,28 @@ def _fmt_int(value: int) -> str:
 
 
 def _window_line(report: DailyReport) -> str:
-    """The date line of a non-default window: a range, or "since records"."""
+    """The date line of a non-default window: a range, or "since records".
+
+    A window whose two ends fall on the same calendar day (e.g. /wb 1, or
+    /wb week on a Monday) prints that single date instead of "X ~ X".
+    """
     end = report.range_end or report.as_of
     if report.range_start is None:
         return f"有记录以来 ~ {end:%Y-%m-%d}"
+    if report.range_start.date() == end.date():
+        return f"{end:%Y-%m-%d}"
     return f"{report.range_start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
 
 
 def format_report(report: DailyReport) -> str:
     """Render the plain-text template.
 
-    No /wb argument leaves range_label empty and produces the original
-    single-day text BYTE-FOR-BYTE (v1.0.2 template). A non-default window
-    (range_label set) swaps the header and the two consumption prefixes to
-    that window and prints the date range instead of a single day.
+    range_label == "" and detailed → the original single-day text,
+    BYTE-FOR-BYTE (v1.0.2 template). Every other combination is a windowed
+    report: the label replaces 当日 in the header and the two consumption
+    lines, and the date line becomes a range. ``detailed`` (the /wb, /wb 0
+    and /wb 1 views) additionally prints the cumulative total, the
+    per-account balance and the 429 / risk-control status.
     """
     # Cumulative all-time consumption; "—" when the Hub gave no all_time block.
     all_time_line = "累计消耗 Token：" + (
@@ -640,7 +668,7 @@ def format_report(report: DailyReport) -> str:
             f"{report.range_label}已消耗 Token：{_fmt_int(report.total_tokens)}",
             f"{report.range_label}已消耗积分：{format_credit(report.total_credits)}",
         ]
-        if report.include_all_time:
+        if report.detailed:
             lines.append(all_time_line)
     else:
         lines = [
@@ -657,9 +685,15 @@ def format_report(report: DailyReport) -> str:
             # STATUS: appended in 【】 brackets between the realm marker and the
             # full-width colon. Normal accounts (status "") show NOTHING.
             status = f"【{a.status}】" if a.status else ""
-            remain = "—" if a.remaining is None else format_credit(a.remaining)
+            # Balance is a current-state extra: only the detailed views print
+            # it, and a deleted account has no balance to print.
+            if report.detailed and not a.deleted:
+                remain = "—" if a.remaining is None else format_credit(a.remaining)
+                tail = f"，剩余 {remain} 积分"
+            else:
+                tail = ""
             lines.append(
-                f"{a.uid[:8]}{realm}{status}：已消耗 {format_credit(a.credits)} 积分，剩余 {remain} 积分"
+                f"{a.uid[:8]}{realm}{status}：已消耗 {format_credit(a.credits)} 积分{tail}"
             )
     else:
         lines.append("账号：无账号")
@@ -668,14 +702,14 @@ def format_report(report: DailyReport) -> str:
             f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
             f"{_fmt_int(report.excluded_tokens)} Token"
         )
-    if report.removed_accounts:
-        # Deleted accounts: roster-only note. Their consumption is already in
-        # summary.window totals (consumption vs roster computed separately).
-        lines.append(f"已删除 {report.removed_accounts} 个账号")
     if report.models:
         lines.append("使用模型统计：")
         for m in report.models:
-            lines.append(f"{m.model}：{format_credit(m.credits)} 积分")
+            # Tokens and credits side by side: the credit figure alone hides
+            # how much traffic produced it (cache hits and cheap models).
+            lines.append(
+                f"{m.model}：{_fmt_int(m.tokens)} Token / {format_credit(m.credits)} 积分"
+            )
     else:
         lines.append(
             "使用模型统计：今日暂无用量"

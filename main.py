@@ -1,6 +1,6 @@
 """AstrBot Star plugin: WorkBuddy Hub usage reports via the /wb command.
 
-/wb [3|7|30|week|month|all|help] — the default (no argument) is today.
+/wb [0|1|3|7|30|week|month|all|help] — no argument is today.
 
 Lifecycle: creates the aiohttp ClientSession in initialize() and closes it in
 terminate() (even if initialize partially failed). Authorization runs BEFORE
@@ -514,7 +514,7 @@ class WorkBuddyUsagePlugin(Star):
             # "all" has no lower bound: the line reads 有记录以来 instead.
             range_start=None if spec.is_all_time else datetime.fromtimestamp(since, tz),
             range_end=datetime.fromtimestamp(until, tz),
-            include_all_time=not spec.is_all_time,
+            detailed=spec.is_detailed,
         )
 
     def report_notice(self) -> str:
@@ -574,6 +574,8 @@ class WorkBuddyUsagePlugin(Star):
             [
                 "[WorkBuddy 用量查询]",
                 "/wb          当日用量（默认）",
+                "/wb 0        同 /wb",
+                "/wb 1        近 1 天（今日）",
                 "/wb 3        近 3 天",
                 "/wb 7        近 7 天",
                 "/wb 30       近 30 天",
@@ -595,7 +597,7 @@ class WorkBuddyUsagePlugin(Star):
 
     @filter.command("wb")
     async def wb(self, event: AstrMessageEvent) -> AsyncIterator:
-        """/wb [3|7|30|week|month|all|help] — WorkBuddy Hub 用量报表。"""
+        """/wb [0|1|3|7|30|week|month|all|help] — WorkBuddy Hub 用量报表。"""
         if not self._allowed(event):
             yield event.plain_result(self._deny_reason(event))
             self._stop(event)
