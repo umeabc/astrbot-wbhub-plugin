@@ -1,4 +1,6 @@
-"""AstrBot Star plugin: WorkBuddy Hub daily usage report via /wb command.
+"""AstrBot Star plugin: WorkBuddy Hub usage reports via the /wb command.
+
+/wb [3|7|30|week|month|all|help] — the default (no argument) is today.
 
 Lifecycle: creates the aiohttp ClientSession in initialize() and closes it in
 terminate() (even if initialize partially failed). Authorization runs BEFORE
@@ -28,12 +30,18 @@ from .client import (
 )
 from .models import DailyReport
 from .reporting import (
+    RANGE_TODAY,
+    BadRange,
+    HelpRequested,
+    RangeSpec,
     aggregate,
     append_update_notice,
     day_bounds,
     derive_update_notice,
     format_report,
     paginate_report,
+    parse_range_arg,
+    range_bounds,
 )
 
 # Clock-skew threshold (seconds): when the Hub's clock differs from the local
@@ -54,6 +62,11 @@ ERR_AUTH = "WorkBuddy Hub 认证失败，请联系管理员检查配置。"
 ERR_SCHEMA = "WorkBuddy Hub 响应格式不兼容，请联系管理员。"
 ERR_RATE_LIMIT = "WorkBuddy Hub 请求受限，请稍后重试。"
 ERR_COOLDOWN = "查询过于频繁，请稍后重试。"
+
+# /wb help (static, no Hub request) and the bad-argument reply. The error text
+# is the one the command contract specifies; the offending token is echoed
+# (sanitized, truncated) so the caller can see what was rejected.
+ERR_BAD_ARG_HINT = "请输入 /wb help 查看正确参数填法。"
 
 # /wbdiag notice-state strings (offline; no Hub request is made for these).
 DIAG_UPDATE_OFF = "网关更新: 已关闭"
@@ -393,8 +406,10 @@ class WorkBuddyUsagePlugin(Star):
             return None
         return client.hub_now()
 
-    async def _get_report(self, now: datetime) -> DailyReport:
-        """Fetch analytics for the local day containing "now" and aggregate.
+    async def _get_report(
+        self, now: datetime, spec: RangeSpec = RANGE_TODAY
+    ) -> DailyReport:
+        """Fetch analytics for the window selected by `spec` and aggregate.
 
         The window is built from a FRESH Hub clock: /accounts is fetched
         first, so its Date header (captured moments ago) is available before
@@ -403,6 +418,10 @@ class WorkBuddyUsagePlugin(Star):
         capture is only valid for its own response, so it is never reused
         from an earlier /wb. If /accounts is unavailable, the local clock
         provides a provisional window that the analytics Date corrects once.
+
+        ``spec`` is the parsed /wb argument (default: today). Calendar
+        windows always end at "now" and are cut in the configured timezone,
+        so /wb week and /wb month are not affected by the Hub host's zone.
         """
         assert self._client is not None
         tz_name = self._validate_timezone()
@@ -429,11 +448,11 @@ class WorkBuddyUsagePlugin(Star):
         hub_now_utc = accounts_hub_now
         if hub_now_utc is not None:
             self._warn_clock_skew(hub_now_utc)
-            since, until = day_bounds(hub_now_utc, tz_name)
+            since, until = range_bounds(spec, hub_now_utc, tz_name)
         else:
             # /accounts failed or sent no Date header: provisional window from
             # the local clock, corrected below from the analytics response.
-            since, until = day_bounds(now, tz_name)
+            since, until = range_bounds(spec, now, tz_name)
 
         payload = await self._client.fetch_analytics(since, until)
 
@@ -447,7 +466,7 @@ class WorkBuddyUsagePlugin(Star):
             fresh = self._fresh_hub_clock()
             if fresh is not None:
                 self._warn_clock_skew(fresh)
-                hub_since, hub_until = day_bounds(fresh, tz_name)
+                hub_since, hub_until = range_bounds(spec, fresh, tz_name)
                 if (
                     hub_since != since
                     or abs(hub_until - until) > CLOCK_SKEW_WARN_SECONDS
@@ -491,6 +510,11 @@ class WorkBuddyUsagePlugin(Star):
             local_now,
             accounts_payload=accounts_payload,
             hub_now=accounts_hub_now,
+            range_label="" if spec.is_default else spec.label,
+            # "all" has no lower bound: the line reads 有记录以来 instead.
+            range_start=None if spec.is_all_time else datetime.fromtimestamp(since, tz),
+            range_end=datetime.fromtimestamp(until, tz),
+            include_all_time=not spec.is_all_time,
         )
 
     def report_notice(self) -> str:
@@ -518,11 +542,80 @@ class WorkBuddyUsagePlugin(Star):
 
     # -- command -------------------------------------------------------------------
 
+    def _wb_args(self, event: AstrMessageEvent) -> list[str]:
+        """Whitespace-separated arguments after the /wb command.
+
+        AstrBot keeps the raw message in ``event.message_str``; whether the
+        adapter already stripped the command name, and which wake prefix is
+        configured, both vary between versions/platforms — so a leading
+        @mention, a leading "/" and a leading "wb" are removed defensively.
+        Full-width spaces count as separators (Chinese IMEs produce them).
+        """
+        try:
+            raw = getattr(event, "message_str", "") or ""
+        except Exception:  # noqa: BLE001 - a missing attribute means no args
+            raw = ""
+        text = str(raw).replace("\u3000", " ").strip()
+        # A leading @mention ("@bot /wb 3") is platform noise, not an argument.
+        while text.startswith(("@", "[CQ:at", "[cq:at")):
+            _, _, text = text.partition(" ")
+            text = text.lstrip()
+        if text.startswith("/"):
+            text = text[1:].lstrip()
+        parts = text.split()
+        if parts and parts[0].lower() == "wb":
+            parts = parts[1:]
+        return parts
+
+    def _help_text(self) -> str:
+        """Static /wb help. No Hub request, no cooldown consumption."""
+        tz_name = self._validate_timezone()
+        return "\n".join(
+            [
+                "[WorkBuddy 用量查询]",
+                "/wb          当日用量（默认）",
+                "/wb 3        近 3 天",
+                "/wb 7        近 7 天",
+                "/wb 30       近 30 天",
+                "/wb week     本周（周一 00:00 起）",
+                "/wb month    本月（1 日 00:00 起）",
+                "/wb all      全部时间（数据多时较慢）",
+                "/wb help     本帮助",
+                "",
+                f"统计口径：以 Hub 时钟为准，时区 {tz_name}。",
+            ]
+        )
+
+    @staticmethod
+    def _bad_arg_text(token: str) -> str:
+        """Reject an unknown argument, echoing a sanitized form of it."""
+        shown = "".join(ch for ch in str(token) if ch.isprintable())[:20]
+        head = f"参数错误：{shown}" if shown else "参数错误"
+        return f"{head}。{ERR_BAD_ARG_HINT}"
+
     @filter.command("wb")
     async def wb(self, event: AstrMessageEvent) -> AsyncIterator:
-        """/wb — WorkBuddy Hub 当日用量报表。"""
+        """/wb [3|7|30|week|month|all|help] — WorkBuddy Hub 用量报表。"""
         if not self._allowed(event):
             yield event.plain_result(self._deny_reason(event))
+            self._stop(event)
+            return
+
+        # Argument handling is local: help and bad-argument replies never
+        # touch the Hub and never consume the per-sender cooldown.
+        args = self._wb_args(event)
+        if len(args) > 1:
+            yield event.plain_result(self._bad_arg_text(" ".join(args)))
+            self._stop(event)
+            return
+        try:
+            spec: RangeSpec = parse_range_arg(args[0] if args else "")
+        except HelpRequested:
+            yield event.plain_result(self._help_text())
+            self._stop(event)
+            return
+        except BadRange as exc:
+            yield event.plain_result(self._bad_arg_text(exc.token))
             self._stop(event)
             return
 
@@ -563,7 +656,7 @@ class WorkBuddyUsagePlugin(Star):
                 # mislabels the instant and truncates the day window (the
                 # v1.0.2 under-count bug). The Hub-clock path in _get_report
                 # supersedes this when a Date header was captured.
-                report = await self._get_report(datetime.now().astimezone())
+                report = await self._get_report(datetime.now().astimezone(), spec)
             except HubAuthError:
                 yield event.plain_result(ERR_AUTH)
             except HubRateLimitError:

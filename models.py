@@ -155,3 +155,13 @@ class DailyReport:
     # separately. These rows exist only for today, so the line disappears on
     # its own the next day. 0 → nothing printed.
     removed_accounts: int = 0
+    # Non-default window (/wb 3|7|30|week|month|all). "" keeps the legacy
+    # single-day template byte-identical; otherwise the label prefixes the
+    # header and the two consumption lines, and the window is printed as a
+    # date range. range_start is None for the all-time window ("有记录以来").
+    range_label: str = ""
+    range_start: datetime | None = None
+    range_end: datetime | None = None
+    # False for the all-time window: there the window total IS the cumulative
+    # total, and printing both would duplicate the same number.
+    include_all_time: bool = True

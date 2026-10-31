@@ -1,4 +1,4 @@
-"""Reporting layer: timezone day bounds, aggregation, formatting, pagination.
+"""Reporting layer: range windows, timezone day bounds, aggregation, formatting.
 
 Pure logic module — no I/O. All credit math uses Decimal; aggregation never
 rounds intermediate values. Display rounding is HALF_UP, up to six decimals.
@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from dataclasses import replace as dataclasses_replace
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from dataclasses import dataclass, replace as dataclasses_replace
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -71,6 +71,105 @@ def day_bounds_from_hub(hub_now_utc: datetime, timezone: str) -> tuple[float, fl
     return day_bounds(hub_now_utc, timezone)
 
 
+# ---------------------------------------------------------------------------
+# /wb <arg> -> report window
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RangeSpec:
+    """One resolvable /wb argument.
+
+    ``key`` drives logic, ``label`` is the user-facing prefix ("当日" /
+    "近 7 天" / "本周" ...). The default keeps the original single-day
+    template byte-for-byte; every other label replaces "当日" in the header
+    and in the two consumption lines.
+    """
+
+    key: str
+    label: str
+
+    @property
+    def is_default(self) -> bool:
+        return self.key == "today"
+
+    @property
+    def is_all_time(self) -> bool:
+        return self.key == "all"
+
+
+RANGE_TODAY = RangeSpec("today", "当日")
+RANGE_ALL = RangeSpec("all", "全部时间")
+RANGE_WEEK = RangeSpec("week", "本周")
+RANGE_MONTH = RangeSpec("month", "本月")
+
+_ROLLING_DAYS = {str(n): RangeSpec(str(n), f"近 {n} 天") for n in (3, 7, 30)}
+_RANGE_BY_TOKEN = {
+    "": RANGE_TODAY,
+    "today": RANGE_TODAY,
+    "week": RANGE_WEEK,
+    "month": RANGE_MONTH,
+    "all": RANGE_ALL,
+    **_ROLLING_DAYS,
+}
+HELP_TOKENS = frozenset({"help", "?", "-h", "--help"})
+
+
+class HelpRequested(Exception):
+    """The user asked for /wb help."""
+
+
+class BadRange(ValueError):
+    """An unrecognised /wb argument (carries the token for the reply)."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(token)
+        self.token = token
+
+
+def parse_range_arg(token: str) -> RangeSpec:
+    """Map one /wb argument to a RangeSpec; "" means the default (today).
+
+    Raises HelpRequested for help tokens and BadRange for everything else.
+    Deliberately strict — no numeric weight other than 3/7/30 — because
+    silently mapping "5" onto 3 days would report a window the caller never
+    asked for.
+    """
+    text = str(token or "").strip().lower()
+    if text in HELP_TOKENS:
+        raise HelpRequested
+    spec = _RANGE_BY_TOKEN.get(text)
+    if spec is None:
+        raise BadRange(text)
+    return spec
+
+
+def range_bounds(spec: RangeSpec, now: datetime, timezone: str) -> tuple[float, float]:
+    """Epoch (since, until) for ``spec``, cut in the configured timezone.
+
+    Calendar windows are inclusive of today and start at local midnight:
+    "3" = today plus the two previous days, "week" starts Monday, "month"
+    starts on the 1st. "all" is unbounded below (epoch 0, which the Hub's
+    ``range=custom`` reads as "no lower bound"); its upper bound is the same
+    "now" as every other window.
+    """
+    if spec.is_default:
+        return day_bounds(now, timezone)
+    tz = ZoneInfo(timezone)
+    local = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
+    if spec.is_all_time:
+        return 0.0, local.timestamp()
+    anchor = local.date()
+    if spec.key == RANGE_WEEK.key:
+        anchor -= timedelta(days=anchor.weekday())
+    elif spec.key == RANGE_MONTH.key:
+        anchor = anchor.replace(day=1)
+    else:
+        anchor -= timedelta(days=int(spec.key) - 1)
+    start = datetime.combine(anchor, time.min, tzinfo=tz)
+    return start.timestamp(), local.timestamp()
+
+
 def aggregate(
     payload: AnalyticsPayload,
     day: date,
@@ -78,6 +177,10 @@ def aggregate(
     as_of: datetime,
     accounts_payload: AccountsPayload | None = None,
     hub_now: datetime | None = None,
+    range_label: str = "",
+    range_start: datetime | None = None,
+    range_end: datetime | None = None,
+    include_all_time: bool = True,
 ) -> DailyReport:
     """Build a DailyReport from a validated analytics payload.
 
@@ -92,6 +195,9 @@ def aggregate(
       per-account STATUS text; hub_now is the Hub instant of that response
       and the base for relative-seconds recovery times. Either may be None
       (Hub-status unavailable) — the report still renders, without status.
+    - range_label/range_start/range_end describe a non-default window (see
+      RangeSpec); the default leaves the label empty and renders the
+      original single-day template.
     """
     warnings: list[str] = []
     summary_window = payload.get("summary", {}).get("window", {})
@@ -235,6 +341,10 @@ def aggregate(
         excluded_tokens=excluded_token_sum,
         total_tokens_all_time=total_tokens_all_time,
         removed_accounts=removed_accounts,
+        range_label=range_label,
+        range_start=range_start,
+        range_end=range_end,
+        include_all_time=include_all_time,
     )
 
 
@@ -502,17 +612,44 @@ def _fmt_int(value: int) -> str:
     return f"{value:,}"
 
 
+def _window_line(report: DailyReport) -> str:
+    """The date line of a non-default window: a range, or "since records"."""
+    end = report.range_end or report.as_of
+    if report.range_start is None:
+        return f"有记录以来 ~ {end:%Y-%m-%d}"
+    return f"{report.range_start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
+
+
 def format_report(report: DailyReport) -> str:
-    """Render the v1.0.2 plain-text template."""
-    lines = [
-        "WorkBuddy 当日用量",
-        report.day.isoformat(),
-        f"当日已消耗 Token：{_fmt_int(report.total_tokens)}",
-        f"当日已消耗积分：{format_credit(report.total_credits)}",
-        # Cumulative all-time consumption; "—" when the Hub gave no all_time block.
-        f"累计消耗 Token："
-        + ("—" if report.total_tokens_all_time is None else _fmt_int(report.total_tokens_all_time)),
-    ]
+    """Render the plain-text template.
+
+    No /wb argument leaves range_label empty and produces the original
+    single-day text BYTE-FOR-BYTE (v1.0.2 template). A non-default window
+    (range_label set) swaps the header and the two consumption prefixes to
+    that window and prints the date range instead of a single day.
+    """
+    # Cumulative all-time consumption; "—" when the Hub gave no all_time block.
+    all_time_line = "累计消耗 Token：" + (
+        "—" if report.total_tokens_all_time is None
+        else _fmt_int(report.total_tokens_all_time)
+    )
+    if report.range_label:
+        lines = [
+            f"WorkBuddy {report.range_label}用量",
+            _window_line(report),
+            f"{report.range_label}已消耗 Token：{_fmt_int(report.total_tokens)}",
+            f"{report.range_label}已消耗积分：{format_credit(report.total_credits)}",
+        ]
+        if report.include_all_time:
+            lines.append(all_time_line)
+    else:
+        lines = [
+            "WorkBuddy 当日用量",
+            report.day.isoformat(),
+            f"当日已消耗 Token：{_fmt_int(report.total_tokens)}",
+            f"当日已消耗积分：{format_credit(report.total_credits)}",
+            all_time_line,
+        ]
     if report.accounts:
         lines.append(f"账号（{len(report.accounts)}）：")
         for a in report.accounts:
@@ -540,7 +677,11 @@ def format_report(report: DailyReport) -> str:
         for m in report.models:
             lines.append(f"{m.model}：{format_credit(m.credits)} 积分")
     else:
-        lines.append("使用模型统计：今日暂无用量")
+        lines.append(
+            "使用模型统计：今日暂无用量"
+            if not report.range_label
+            else "使用模型统计：区间内暂无用量"
+        )
     for w in report.warnings:
         lines.append(f"警告：{w}")
     return "\n".join(lines)
