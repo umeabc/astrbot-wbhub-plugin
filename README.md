@@ -225,7 +225,11 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.9.2** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。`/usage/analytics` 在 v1.7.12 → v1.9.2 之间**没有任何改动**（逐 hunk 核对 `wb_proxy.py`）；`/updates`、`/updates/check` 与 `/panel/login` 的成功响应同样未变（v1.9.0 只在面板密码加密组件不可用时把登录改成返回 500，本插件按传输失败处理）。`/accounts` 方面，v1.9.0 起 `_throttle_snapshot()` 的 `cappedAt` 也会覆盖「付费模型撞 6004」的持久化标记（之前只有免费模型的 `model_caps` 会带）——插件本来就按 `cappedAt` 是否存在渲染 `{模型}额度用满，… 恢复`，因此只是显示得更准；`Account.public()` 未新增字段。v1.8.0 相对 v1.7.33 同样没有契约变更；v1.7.33 只多了 `apiKey`（布尔值，不是密钥本身）与 `credentialMask`（本插件均不渲染）。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
+- **WorkBuddy Hub**：契约按 **v1.10.7** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。
+  - `/usage/analytics`：v1.7.12 → v1.10.7 逐版核对，payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段**没有改动**；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
+  - `/accounts`：`Account.public()` 只增不减（期间新增了 `platform` / `product` / `note` / `proxySlot` / `lastErrorDetail` / `softStreak` / `lastFailFor` / `lastCheckin` 等，本插件不读）；本插件渲染的 `cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / `reserveBlocked` / `dailyLimitBlocked` / `creditLimitReached` / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain` 全部保留，`?realm=all` 仍返回全部区域的账号。
+  - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就是这么发的）。
+  - v1.10.x 的新增内容都在本插件不消费的层面：CodeArts 第三出口与媒体（生图/生视频）能力**默认关闭**（开启后产生的用量会按普通 usage 行进入统计，模型名照常显示）、429 响应新增 `X-RateLimit-Reset`（面向上游推理客户端，不是面板接口）、模型目录与计价快照更新、`usage.jsonl` 改为原子追加。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢
