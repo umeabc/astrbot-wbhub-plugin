@@ -376,7 +376,7 @@ class TestCommandArgs:
     ):
         plugin = make_plugin()
         wire(plugin, stub_hub, session)
-        text = text_of(await run(plugin, "/wb all"))
+        text = text_of(await run(plugin, "/wb cn all"))
         call = stub_hub.analytics_calls[-1]
         assert int(call["since"]) == 0
         assert text.splitlines()[0] == "WorkBuddy 全部时间用量"
@@ -464,7 +464,7 @@ class TestDetailedViews:
         wire(plugin, stub_hub, session)
         for arg in ("3", "7", "30", "week", "month", "all"):
             stub_hub.analytics_calls.clear()
-            text = text_of(await run(plugin, f"/wb {arg}"))
+            text = text_of(await run(plugin, f"/wb cn {arg}"))
             assert "累计消耗 Token" not in text, arg
             assert "剩余" not in text, arg
             assert "被429" not in text and "额度用满" not in text, arg

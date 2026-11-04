@@ -1,8 +1,8 @@
 name: astrbot_plugin_workbuddy_usage
 display_name: WorkBuddy 用量查询
-desc: 通过 /wb 查询 WorkBuddy Hub 单实例的当日用量、账号余额与账号状态
+desc: 通过 /wb 分渠道查询 WorkBuddy 国内版、国际版、CodeArts 用量与账号状态，或汇总全渠道 Token
 short_desc: 在 QQ 里一条指令查 WorkBuddy 用量与账号状态
-version: v1.3.7
+version: v1.3.8
 author: umeabc
 repo: https://github.com/umeabc/astrbot-wbhub-plugin
 support_platforms:

@@ -1,6 +1,6 @@
 """AstrBot Star plugin: WorkBuddy Hub usage reports via the /wb command.
 
-/wb [0|1|3|7|30|week|month|all|help] — no argument is today.
+/wb [cn|int|hw|all] [0|1|3|7|30|week|month|all] — defaults to cn today.
 
 Lifecycle: creates the aiohttp ClientSession in initialize() and closes it in
 terminate() (even if initialize partially failed). Authorization runs BEFORE
@@ -29,6 +29,7 @@ from .client import (
 )
 from .models import DailyReport
 from .reporting import (
+    CHANNEL_REALMS,
     RANGE_TODAY,
     BadRange,
     HelpRequested,
@@ -39,7 +40,7 @@ from .reporting import (
     derive_update_notice,
     format_report,
     paginate_report,
-    parse_range_arg,
+    parse_channel_args,
     range_bounds,
 )
 
@@ -389,7 +390,7 @@ class WorkBuddyUsagePlugin(Star):
         return client.hub_now()
 
     async def _get_report(
-        self, now: datetime, spec: RangeSpec = RANGE_TODAY
+        self, now: datetime, spec: RangeSpec = RANGE_TODAY, channel: str = "cn"
     ) -> DailyReport:
         """Fetch analytics for the window selected by `spec` and aggregate.
 
@@ -415,15 +416,20 @@ class WorkBuddyUsagePlugin(Star):
         # (and no roster extension) with a logged warning.
         accounts_payload = None
         accounts_hub_now = None
+        accounts_endpoint = "/codearts/accounts" if channel == "hw" else "/accounts"
         try:
-            accounts_payload = await self._client.fetch_accounts()
+            accounts_payload = (
+                await self._client.fetch_codearts_accounts() if channel == "hw"
+                else await self._client.fetch_accounts()
+            )
             # This Date header is both the base for the relative-seconds
             # fields (see reporting.status_segments) and the window's clock.
             accounts_hub_now = self._fresh_hub_clock()
         except HubError as exc:
             logger.warning(
-                "workbuddy_usage: /accounts unavailable, report will omit "
+                "workbuddy_usage: %s unavailable, report will omit "
                 "per-account status: %s",
+                accounts_endpoint,
                 type(exc).__name__,
             )
 
@@ -436,7 +442,8 @@ class WorkBuddyUsagePlugin(Star):
             # the local clock, corrected below from the analytics response.
             since, until = range_bounds(spec, now, tz_name)
 
-        payload = await self._client.fetch_analytics(since, until)
+        realm = CHANNEL_REALMS[channel]
+        payload = await self._client.fetch_analytics(since, until, realm=realm)
 
         # Degraded-path self-correction. The analytics response carries the
         # Hub's Date too: if it disagrees about the calendar day (UTC-hosted
@@ -454,8 +461,33 @@ class WorkBuddyUsagePlugin(Star):
                     or abs(hub_until - until) > CLOCK_SKEW_WARN_SECONDS
                 ):
                     since, until = hub_since, hub_until
-                    payload = await self._client.fetch_analytics(since, until)
+                    payload = await self._client.fetch_analytics(since, until, realm=realm)
                 hub_now_utc = fresh
+        if accounts_payload is not None and channel != "all":
+            # Only the live roster needs local filtering: analytics has already
+            # been filtered by the Hub, including historical rows with no realm
+            # on the account axis. Never infer a channel from a model name.
+            accounts_payload = {
+                **accounts_payload,
+                "accounts": [
+                    a for a in accounts_payload.get("accounts", [])
+                    if a.get("realm") == realm
+                ],
+            }
+            if channel == "hw":
+                # Hub analytics enriches only its WorkBuddy pool. Supply the
+                # CodeArts balances from its separate roster for active rows;
+                # aggregate() already adds idle accounts from the same roster.
+                live = {a["uid"]: a for a in accounts_payload["accounts"]}
+                payload = {
+                    **payload,
+                    "accounts": [
+                        {**a, "credits": live[a["uid"]]["credits"]}
+                        if a["uid"] in live and isinstance(live[a["uid"]].get("credits"), dict)
+                        else a
+                        for a in payload.get("accounts", [])
+                    ],
+                }
         # Gateway update notice: cheap GET /updates, derive the notice, and
         # (throttled) fire a background manual check. A failure here must
         # NEVER affect the report — degrade to no notice, log at info.
@@ -496,6 +528,7 @@ class WorkBuddyUsagePlugin(Star):
             range_start=None if spec.is_all_time else datetime.fromtimestamp(since, tz),
             range_end=datetime.fromtimestamp(until, tz),
             detailed=spec.is_detailed,
+            channel=channel,
         )
 
     def report_notice(self) -> str:
@@ -562,8 +595,16 @@ class WorkBuddyUsagePlugin(Star):
                 "/wb 30       近 30 天",
                 "/wb week     本周（周一 00:00 起）",
                 "/wb month    本月（1 日 00:00 起）",
-                "/wb all      全部时间（数据多时较慢）",
+                "/wb cn all   国内版全部时间（数据多时较慢）",
                 "/wb help     本帮助",
+                "",
+                "渠道：/wb <渠道> [参数]（不填渠道默认 cn）",
+                "cn：WorkBuddy 国内版；int：WorkBuddy 国际版；hw：CodeArts",
+                "all：全渠道，仅 Token 总数、累计 Token、各模型 Token；无账号明细",
+                "累计 Token 仅不填参数 / 0 / 1 时显示。",
+                "参数：不填 / 0 / 1 / 3 / 7 / 30 / week / month / all",
+                "示例：/wb cn 0、/wb int 7、/wb hw month、/wb all 30",
+                "/wb 0 等价 /wb cn 0；/wb all 是全渠道当日，/wb all all 是全渠道全部时间。",
                 "",
                 f"统计口径：以 Hub 时钟为准，时区 {tz_name}。",
             ]
@@ -578,7 +619,7 @@ class WorkBuddyUsagePlugin(Star):
 
     @filter.command("wb")
     async def wb(self, event: AstrMessageEvent) -> AsyncIterator:
-        """/wb [0|1|3|7|30|week|month|all|help] — WorkBuddy Hub 用量报表。"""
+        """/wb [cn|int|hw|all] [参数] — WorkBuddy Hub 用量报表。"""
         if not self._allowed(event):
             yield event.plain_result(self._deny_reason(event))
             self._stop(event)
@@ -587,12 +628,8 @@ class WorkBuddyUsagePlugin(Star):
         # Argument handling is local: help and bad-argument replies never
         # touch the Hub and never consume the per-sender cooldown.
         args = self._wb_args(event)
-        if len(args) > 1:
-            yield event.plain_result(self._bad_arg_text(" ".join(args)))
-            self._stop(event)
-            return
         try:
-            spec: RangeSpec = parse_range_arg(args[0] if args else "")
+            channel, spec = parse_channel_args(args)
         except HelpRequested:
             yield event.plain_result(self._help_text())
             self._stop(event)
@@ -639,7 +676,7 @@ class WorkBuddyUsagePlugin(Star):
                 # mislabels the instant and truncates the day window (the
                 # v1.0.2 under-count bug). The Hub-clock path in _get_report
                 # supersedes this when a Date header was captured.
-                report = await self._get_report(datetime.now().astimezone(), spec)
+                report = await self._get_report(datetime.now().astimezone(), spec, channel)
             except HubAuthError:
                 yield event.plain_result(ERR_AUTH)
             except HubRateLimitError:

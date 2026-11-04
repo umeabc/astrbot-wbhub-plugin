@@ -171,6 +171,25 @@ def parse_range_arg(token: str) -> RangeSpec:
     return spec
 
 
+CHANNEL_REALMS = {"cn": "cn", "int": "intl", "hw": "codearts", "all": "all"}
+
+
+def parse_channel_args(args: list[str]) -> tuple[str, RangeSpec]:
+    """An explicit channel takes precedence; bare ranges default to cn.
+
+    In particular, /wb all is the all-channel daily view. The all-time
+    range remains available as /wb cn all (or /wb all all).
+    """
+    channel = "cn"
+    remaining = args
+    if args and args[0].lower() in CHANNEL_REALMS:
+        channel = args[0].lower()
+        remaining = args[1:]
+    if len(remaining) > 1:
+        raise BadRange(" ".join(args))
+    return channel, parse_range_arg(remaining[0] if remaining else "")
+
+
 def range_bounds(spec: RangeSpec, now: datetime, timezone: str) -> tuple[float, float]:
     """Epoch (since, until) for ``spec``, cut in the configured timezone.
 
@@ -208,6 +227,7 @@ def aggregate(
     range_start: datetime | None = None,
     range_end: datetime | None = None,
     detailed: bool = True,
+    channel: str = "cn",
 ) -> DailyReport:
     """Build a DailyReport from a validated analytics payload.
 
@@ -330,7 +350,7 @@ def aggregate(
     # Analytics rows for uids absent from the live pool are kept and marked
     # 已删除 (v1.3.4): they consumed part of the window's total, so dropping
     # them left the list unable to explain the number above it.
-    accounts = merge_accounts_roster(accounts, payload, accounts_payload)
+    accounts = merge_accounts_roster(accounts, payload, accounts_payload, channel=channel)
     accounts = [_maybe_with_status(a, status_map) for a in accounts]
 
     # Pool balance: every known credits.remain, summed. Idle accounts stay in
@@ -374,6 +394,7 @@ def aggregate(
         range_end=range_end,
         available_credits=available_credits,
         detailed=detailed,
+        channel=channel,
     )
 
 
@@ -469,6 +490,10 @@ def status_segments(
         t = _fmt_rel_time(0, base, tz)  # deadline within the current second
     if t is not None:
         segments.append(f"冷却，{t} 恢复")
+    elif include_live_state and account.get("realm") == "codearts" and account.get("cooling") is True:
+        # CodeArts `until` is a wall time without a timezone. Its explicit
+        # cooling flag is usable, but inventing a recovery instant is not.
+        segments.append("冷却")
     # 5. modelCooldowns entries → {model}被429，{t} 恢复, or with cappedAt:
     #    {model}额度用满，{t} 恢复 (time from expiresAt, ABSOLUTE epoch)
     cooldowns = account.get("modelCooldowns") if include_live_state else None
@@ -558,6 +583,7 @@ def merge_accounts_roster(
     report_accounts: list[AccountUsage],
     analytics_payload: AnalyticsPayload,
     accounts_payload: AccountsPayload | None,
+    channel: str = "cn",
 ) -> list[AccountUsage]:
     """Extend the roster so every account in /accounts?realm=all is listed.
 
@@ -586,9 +612,10 @@ def merge_accounts_roster(
         for row in report_accounts:
             if row.uid.strip().lower() in _PLACEHOLDER_UIDS or row.uid in pool_uids:
                 marked.append(row)
-            elif row.credits == 0:
+            elif row.credits == 0 and (channel != "hw" or row.tokens == 0):
                 # Deleted AND nothing consumed in this window: no information
-                # to show, and an "已消耗 0 积分" line would only take space.
+                # to show. CodeArts may return only tokens, without credit;
+                # retain those rows while keeping the WorkBuddy template.
                 continue
             else:
                 marked.append(
@@ -668,8 +695,29 @@ def format_report(report: DailyReport) -> str:
         else format_credit(report.available_credits)
     )
     label = report.range_label or "当日"
+    if report.channel == "all":
+        lines = [
+            f"WorkBuddy 全渠道 {label}用量",
+            _window_line(report) if report.range_label else report.day.isoformat(),
+            f"全渠道{label}已消耗 Token：{report.total_tokens:,}",
+        ]
+        if report.detailed:
+            lines.append(all_time_line)
+        if report.models:
+            lines.append("使用模型统计：")
+            lines.extend(
+                f"{m.model}：{m.tokens:,} Token"
+                for m in sorted(report.models, key=lambda m: (-m.tokens, m.model))
+            )
+        else:
+            lines.append(
+                "使用模型统计：今日暂无用量" if not report.range_label
+                else "使用模型统计：区间内暂无用量"
+            )
+        return "\n".join(lines)
+    title = {"cn": "WorkBuddy", "int": "WorkBuddy 国际版", "hw": "CodeArts"}[report.channel]
     lines = [
-        f"WorkBuddy {label}用量",
+        f"{title} {label}用量",
         _window_line(report) if report.range_label else report.day.isoformat(),
         f"{label}已消耗 Token：{report.total_tokens:,}",
         f"{label}已消耗积分：{format_credit(report.total_credits)}",
@@ -690,9 +738,10 @@ def format_report(report: DailyReport) -> str:
                 tail = f"，剩余 {remain} 积分"
             else:
                 tail = ""
-            lines.append(
-                f"{a.uid[:8]}{realm}{status}：已消耗 {format_credit(a.credits)} 积分{tail}"
-            )
+            consumed = f"{format_credit(a.credits)} 积分"
+            if report.channel == "hw":
+                consumed = f"{a.tokens:,} Token / {consumed}"
+            lines.append(f"{a.uid[:8]}{realm}{status}：已消耗 {consumed}{tail}")
     else:
         lines.append("账号：无账号")
     if report.excluded_credits != 0 or report.excluded_tokens != 0:

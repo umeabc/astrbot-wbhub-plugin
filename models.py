@@ -169,3 +169,5 @@ class DailyReport:
     # consumption only — a month of usage next to a momentary cooldown reads as
     # one snapshot.
     detailed: bool = True
+    # cn keeps the original template; all renders only token statistics.
+    channel: str = "cn"

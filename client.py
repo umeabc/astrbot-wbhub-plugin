@@ -429,8 +429,10 @@ class WorkBuddyClient:
         self._token = token
         return token
 
-    async def fetch_analytics(self, since: float, until: float) -> AnalyticsPayload:
-        """GET /usage/analytics with realm=all and a custom epoch window.
+    async def fetch_analytics(
+        self, since: float, until: float, realm: str = "all"
+    ) -> AnalyticsPayload:
+        """GET /usage/analytics with a realm and a custom epoch window.
 
         If a statically configured token is rejected (401) and a password is
         available, exactly one login+replay is attempted. A wrong password is
@@ -439,7 +441,7 @@ class WorkBuddyClient:
         raw = await self._fetch_json(
             "get", "/usage/analytics", "analytics",
             params_factory=lambda: {
-                "realm": "all",
+                "realm": realm,
                 "range": "custom",
                 "since": str(int(since)),
                 "until": str(int(until)),
@@ -499,6 +501,21 @@ class WorkBuddyClient:
         """
         raw = await self._fetch_json("get", "/accounts", "accounts", params={"realm": "all"})
         return validate_accounts(raw)
+
+    async def fetch_codearts_accounts(self) -> AccountsPayload:
+        """CodeArts has its own pool; /accounts?realm=all excludes it.
+
+        v1.10.9 CodeArtsAccount.view() omits realm/product and uses disabled
+        instead of enabled. Normalize only fields whose meaning is explicit;
+        its zone-less `until` must not be treated as a recovery timestamp.
+        """
+        raw = await self._fetch_json("get", "/codearts/accounts", "codearts-accounts")
+        payload = validate_accounts(raw)
+        for entry in payload["accounts"]:
+            entry["realm"] = "codearts"
+            if isinstance(entry.get("disabled"), bool):
+                entry["enabled"] = not entry["disabled"]
+        return payload
 
     async def fetch_updates(self) -> Mapping[str, Any]:
         """GET /updates — the Hub's update status (read-only, never runs a check).

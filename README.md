@@ -1,13 +1,13 @@
 # astrbot-wbhub-plugin
 
-AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的用量报表 —— 默认当日，也可以查近 1/3/7/30 天、本周、本月或全部时间；包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）。
+AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的用量报表 —— 默认 WorkBuddy 国内版当日，也可以选择国际版、CodeArts 或全渠道，以及近 1/3/7/30 天、本周、本月或全部时间。单渠道包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）；全渠道只汇总 Token。
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
-当前版本：**v1.3.7**。本次更新仅进行内部代码瘦身，用户可见行为不变。
+当前版本：**v1.3.8**。新增 `/wb cn`、`/wb int`、`/wb hw`、`/wb all` 渠道选择；原有 `/wb 0`、`/wb 7` 等写法默认国内版。注意：单独 `/wb all` 现在表示全渠道当日，国内版全部时间请用 `/wb cn all`。
 
 - 仓库：<https://github.com/umeabc/astrbot-wbhub-plugin>
-- 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts`（`X-Panel-Token` 认证）
+- 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts` / `/codearts/accounts`（`X-Panel-Token` 认证）
 
 > 非官方插件，与 WorkBuddy / CodeBuddy 官方无关。上游网关项目见 [ardeyouxipianyi/workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub)，接口契约以该项目源码为准。
 
@@ -17,7 +17,7 @@ AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一�
 
 | 能力 | 说明 |
 | --- | --- |
-| `/wb [参数]` | 输出用量报表（默认当日；`0` 同默认、`1` 近 1 天、`3`/`7`/`30` 近 N 天、`week`/`month`/`all` 选区间，`help` 看帮助）。一次一条，过长则分页 |
+| `/wb [渠道] [参数]` | 输出用量报表（渠道 `cn`/`int`/`hw`/`all`，默认 `cn`；不填参数为当日，`0` 同默认、`1` 近 1 天、`3`/`7`/`30` 近 N 天、`week`/`month`/`all` 选区间，`help` 看帮助）。一次一条，过长则分页 |
 | `/wbdiag` | 自诊断：打印插件看到的适配器、发送者 ID、群 ID、是否管理员、判定结果。**不受白名单限制**，被拒绝的人也能用它排查 |
 | 账号状态 | 熔断 / 降级 / 冷却 / 单模型 429 / 额度用满 / 风控限制 / 凭证过期 / 停单 / 已禁用模型 / 连续失败，正常账号不显示任何多余字符 |
 | 分页 | 账号或模型很多时按行分页成多条消息（`[WorkBuddy i/N]`），**不截断任何一条** |
@@ -71,7 +71,26 @@ tzdata>=2024.1
 
 ## 用法
 
-在允许的私聊或群聊里发送 `/wb`（前缀跟随 AstrBot 配置）。不填参数就是**当日**报表。
+在允许的私聊或群聊里发送 `/wb`（前缀跟随 AstrBot 配置）。不填渠道默认为 **WorkBuddy 国内版**，不填区间参数就是**当日**报表。
+
+### 渠道
+
+| 渠道 | 统计范围 | 示例 |
+| --- | --- | --- |
+| `cn` | WorkBuddy 国内版账号与使用情况 | `/wb cn`、`/wb cn 0`、`/wb cn 7` |
+| `int` | WorkBuddy 国际版账号与使用情况 | `/wb int`、`/wb int 1`、`/wb int week` |
+| `hw` | CodeArts 账号与使用情况 | `/wb hw`、`/wb hw 3`、`/wb hw month` |
+| `all` | 全渠道 Token 总数、各模型 Token 数；仅不填参数、`0`、`1` 时增加累计使用 Token | `/wb all`、`/wb all 30`、`/wb all all` |
+
+四种渠道都支持下表中的区间参数。`/wb 0` 与 `/wb cn 0`、`/wb 7` 与 `/wb cn 7` 完全等价；国内版沿用 `WorkBuddy` 报表标题，国际版、CodeArts、全渠道分别使用 `WorkBuddy 国际版`、`CodeArts`、`WorkBuddy 全渠道`。
+
+**`/wb all` 优先解释为渠道选择，即全渠道当日。** 旧版用它查询全部时间的写法需改成 `/wb cn all`；全渠道全部时间用 `/wb all all`。`/wb help` 可查看渠道说明和示例。
+
+全渠道报表不显示积分、账号明细、余额或账号状态；需要这些信息时，分别查询 `cn`、`int`、`hw`。渠道选择不新增配置项，也不改变权限、冷却和分页规则。
+
+CodeArts 上游用量经常只有 Token，没有积分（`credit`）。`hw` 的账号行因此同时显示 Token 与积分，例如 `已消耗 3,333 Token / 0 积分`；已删除但窗口内有 Token 消耗的账号也会保留。`cn`、`int` 的账号行继续沿用原有积分模板。
+
+### 区间参数
 
 | 参数 | 统计区间 | 输出样式 |
 | --- | --- | --- |
@@ -81,12 +100,12 @@ tzdata>=2024.1
 | `3` / `7` / `30` | 近 3 / 7 / 30 天（含今天） | 区间模板 |
 | `week` | 本周（周一 00:00 起） | 区间模板 |
 | `month` | 本月（1 日 00:00 起） | 区间模板 |
-| `all` | 全部时间（Hub 数据多时会慢一些） | 区间模板 |
+| `all`（放在渠道后） | 全部时间，如 `/wb cn all`、`/wb all all`（Hub 数据多时会慢一些） | 区间模板 |
 | `help` | 参数帮助 | — |
 
-「当日模板」与「区间模板」的差别不只是标题（v1.3.4）：
+单渠道的「当日模板」与「区间模板」的差别不只是标题（v1.3.4）：
 
-| 视图 | 累计消耗 Token | 可用积分（全账号余额合计） | 账号剩余积分 | 429 / 风控等实时状态 |
+| 视图 | 累计消耗 Token | 可用积分（所选渠道账号余额合计） | 账号剩余积分 | 429 / 风控等实时状态 |
 | --- | --- | --- | --- | --- |
 | `/wb`、`/wb 0`、`/wb 1` | 显示 | 显示 | 显示 | 显示 |
 | `3`/`7`/`30`/`week`/`month`/`all` | 不显示 | 不显示 | 不显示 | 不显示 |
@@ -94,6 +113,8 @@ tzdata>=2024.1
 原因：这三项都是「此刻」的状态，和一段区间的消耗放在一起容易被读成同一时刻；宽窗口只保留与区间有关的消耗数据。
 
 「实时状态」指**带恢复时间的那些**：上游风控限制、熔断、降级、冷却、单模型 429 / 额度用满，以及「近期429」历史兜底。**结构性状态**不受影响，宽窗口里照样显示：凭证过期、已停用、保留积分停单、当日限额停单、积分达限、已禁用模型、连续失败。
+
+CodeArts 的 `cooling=true` 在不填参数、`0`、`1` 时只显示 `【冷却】`，宽窗口隐藏；上游 `until` 没有时区，插件不据此推算恢复时间。
 
 `/wb 1` 与 `/wb` 是同一天窗口，但按区间模板输出，所以两者不会长得一样。
 
@@ -111,9 +132,9 @@ dead0000 [cn]【已删除】：已消耗 1.2 积分
 deepseek-v4.1-flash：91,204,553 Token / 69.93 积分
 ```
 
-> 已删除的账号不再只报「已删除 N 个账号」：**窗口内有过消耗**的已删除账号会以 `【已删除】` 单独成行（余额一栏省略），这样上面的合计能对得上。**消耗为 0 的已删除账号直接不显示** —— 一行「已消耗 0 积分」只会占版面。
+> 已删除的账号不再只报「已删除 N 个账号」：**窗口内有过消耗**的已删除账号会以 `【已删除】` 单独成行（余额一栏省略），这样上面的合计能对得上。WorkBuddy 沿用按积分判断消耗的规则；CodeArts 只要有 Token 或积分消耗就保留。没有消耗的已删除账号不显示。
 
-其它任何参数（如 `/wb 5`、`/wb 3 7`）只会回一句「参数错误：…。请输入 /wb help 查看正确参数填法。」——**不请求 Hub，也不占用查询冷却**。
+其它任何参数（如 `/wb 5`、`/wb 3 7`、`/wb xx 7`）只会回一句「参数错误：…。请输入 /wb help 查看正确参数填法。」——**不请求 Hub，也不占用查询冷却**。
 
 当日报表示例：
 
@@ -127,7 +148,7 @@ WorkBuddy 当日用量
 账号（3）：
 a1b2c3d4 [cn]：已消耗 38.19 积分，剩余 4288.97 积分
 e5f6a7b8 [cn]：已消耗 34.64 积分，剩余 3478.61 积分
-c9d0e1f2 [intl]【近期429（code 14003，当前未限制）】：已消耗 0 积分，剩余 528.18 积分
+c9d0e1f2 [cn]【近期429（code 14003，当前未限制）】：已消耗 0 积分，剩余 528.18 积分
 使用模型统计：
 deepseek-v4.1-flash：91,204,553 Token / 69.93 积分
 glm-5.3-flash：12,310,000 Token / 10.04 积分
@@ -135,9 +156,9 @@ glm-5.3-flash：12,310,000 Token / 10.04 积分
 
 - **账号只显示 UUID 前 8 位**（脱敏）；昵称不显示（在部分部署里昵称就是手机号）。
 - **`剩余` 是该账号当前的积分余额**，与 `已消耗` 是两回事。
-- 「使用模型统计」是**全实例跨账号汇总**。Hub 不提供「账号 × 模型」的积分分解，插件**不会伪造或按比例推算**。
+- 「使用模型统计」是**所选渠道内跨账号汇总**，`all` 则汇总全渠道。Hub 不提供「账号 × 模型」的积分分解，插件**不会伪造或按比例推算**。
 - 累计 Token 取自同一响应体的 `summary.all_time`，与当日数据天然同一时刻。
-- **可用积分**是同一响应里**所有账号** `credits.remain` 的合计（含当前没有消耗、因而不在列表里的账号）；一个余额都读不到时显示 `—`，不会假装是 0。
+- **可用积分**是**所选渠道所有账号** `credits.remain` 的合计（含当前没有消耗、因而不在列表里的账号）；一个余额都读不到时显示 `—`，不会假装是 0。CodeArts 的余额由独立账号接口补充。
 
 ### 网关更新提示（v1.2.0）
 
@@ -188,7 +209,7 @@ glm-5.3-flash：12,310,000 Token / 10.04 积分
 - 这组凭据等价于 Hub 的**管理权限**（能读账号与用量），请妥善保护 AstrBot 的配置与备份。
 - Hub 出厂面板密码是 `admin`，部署后应尽快修改，并同步更新插件配置。
 - 插件默认使用 HTTP 明文访问 Hub，建议放在可信内网，或用 HTTPS 反向代理。
-- 插件只做**只读**查询：`/panel/login`、`/usage/analytics`、`/accounts`、`/panel/logout`，不会修改 Hub 的任何状态。
+- 插件只做**只读**查询：`/panel/login`、`/usage/analytics`、`/accounts`、`/codearts/accounts`、`/panel/logout`，不会修改 Hub 的任何状态。
 
 ## 离线探测（不经过 QQ）
 
@@ -210,11 +231,14 @@ WB_HUB_PASSWORD='<面板密码>' python tools/probe_hub.py \
 ## 实现要点
 
 - **区间终点永远是 Hub 时钟的「现在」，区间起点按 `default_timezone` 切**：`3`/`7`/`30` 从 N-1 天前的 0 点起，`week` 从周一 0 点起，`month` 从 1 日 0 点起，`all` 不设下界。窗口时间戳直接发给 Hub 的 `range=custom`，所以不受 Hub 所在机器时区影响。
-- **「当日」以 Hub 的时钟为准，而且只用"刚刚这次响应"的时钟**。Hub 的 HTTP 响应带标准 `Date` 头（UTC，无歧义），插件据此换算配置时区的日历日；即便 AstrBot 跑在 UTC 容器、或宿主机时钟漂移，窗口也不会错。每次 `/wb` 先请求 `/accounts`（顺带取得本次响应的 `Date`）再计算窗口；超过 5 秒的旧 `Date` 一律不参与计算 —— 否则窗口会停在上一次查询的时刻，把"当时的用量"当成"现在的用量"重复报出来（v1.3.2 修复）。`/accounts` 不可用时退回本机时钟，再用 `/usage/analytics` 响应里的 `Date` 校正一次。
+- **「当日」以 Hub 的时钟为准，而且只用"刚刚这次响应"的时钟**。Hub 的 HTTP 响应带标准 `Date` 头（UTC，无歧义），插件据此换算配置时区的日历日；即便 AstrBot 跑在 UTC 容器、或宿主机时钟漂移，窗口也不会错。每次 `/wb` 先请求账号接口（`hw` 为 `/codearts/accounts`，其它渠道为 `/accounts?realm=all`，顺带取得本次响应的 `Date`）再计算窗口；超过 5 秒的旧 `Date` 一律不参与计算 —— 否则窗口会停在上一次查询的时刻，把"当时的用量"当成"现在的用量"重复报出来（v1.3.2 修复）。账号接口不可用时退回本机时钟，再用 `/usage/analytics` 响应里的 `Date` 校正一次。
 - 响应体按固定大小**分块读到 EOF** 再解析（aiohttp 的 `read(n)` 在拿到部分缓冲时就会返回，单次大 `read` 会偶发截断）。
 - 积分以 `Decimal` 解析与聚合，聚合过程不取整，仅在显示时按 6 位小数四舍五入并去掉尾零。
-- `/accounts` 必须带 `realm=all`，否则 Hub 只返回当前区域的账号。
-- **已删除账号按行列出**：`/accounts` 里已经不存在的 uid，只要在查询窗口内有消耗，就保留成 `【已删除】` 行（没有余额），不再只打印一个数量——否则区间合计对不上账。
+- `/usage/analytics` 的 `realm` 分别传 `cn`、`intl`、`codearts`、`all`。`cn`/`int` 的账号从 `/accounts?realm=all` 取得后按 `realm` 筛选；CodeArts 独立调用 `/codearts/accounts`，补齐余额和没有用量的账号。
+- **CodeArts 口径来自 Hub v1.10.9 源码**：`wb_codearts.py:382-383` 的账号对象固定 `realm="codearts"`、`product="codearts"`，但账号公开视图（488-515 行）没有返回这两个字段；插件根据独立接口补上 `realm`。`wb_proxy.py:24922-24931` 的 CodeArts 请求处理传入 `realm="codearts"`，1581 行将其写入 usage 行的 `realm` 字段，因此 `hw` 按该 `realm` 查询统计，而非按 `platform` 或模型名猜测。
+- **全渠道只取一次 analytics**：直接使用 `summary.window`、`summary.all_time` 与 `models[]`，不分别请求三种渠道再相加，也不额外请求 CodeArts 账号接口。各渠道正常查询仍为 1 次账号请求 + 1 次 analytics 请求；登录、续期、时钟校正重试及原有更新提示请求另计。
+- CodeArts 账号接口可能按账号查询上游信息（Hub 缓存 60 秒，单次超时 8 秒）；接口失败时记录日志并降级，历史用量仍可显示，余额和状态可能缺失。
+- **已删除账号按行列出**：对应渠道账号接口里已经不存在的 uid，只要在查询窗口内有消耗，就保留成 `【已删除】` 行（没有余额），不再只打印一个数量——否则区间合计对不上账。
 
 ## 测试
 
@@ -227,11 +251,11 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.10.9** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。v1.10.7 → v1.10.9 源码对照，并核对 v1.10.8 / v1.10.9 变更记录：本插件消费的 `/usage/analytics`、`/accounts`、`/updates`、`/updates/check`、`/panel/login`、`/panel/logout` JSON 契约未变，无需改代码。
+- **WorkBuddy Hub**：契约按 **v1.10.9** 校验（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.7 → v1.10.9 源码对照，并核对 v1.10.8 / v1.10.9 变更记录：原有 `/usage/analytics`、`/accounts`、`/updates`、`/updates/check`、`/panel/login`、`/panel/logout` JSON 契约未变；插件 v1.3.8 新增使用 `/codearts/accounts`。
   - `/usage/analytics`：v1.7.12 → v1.10.9 核对，payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段**没有改动**；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
-  - `/accounts`：`Account.public()` 只增不减（期间新增了 `platform` / `product` / `note` / `proxySlot` / `lastErrorDetail` / `softStreak` / `lastFailFor` / `lastCheckin` 等，本插件不读）；本插件渲染的 `cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / `reserveBlocked` / `dailyLimitBlocked` / `creditLimitReached` / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain` 全部保留，`?realm=all` 仍返回全部区域的账号。
+  - `/accounts`：`Account.public()` 只增不减（期间新增了 `platform` / `product` / `note` / `proxySlot` / `lastErrorDetail` / `softStreak` / `lastFailFor` / `lastCheckin` 等，本插件不读）；本插件渲染的 `cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / `reserveBlocked` / `dailyLimitBlocked` / `creditLimitReached` / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain` 全部保留，`?realm=all` 仍返回 WorkBuddy 全部区域的账号，CodeArts 账号需用独立接口。
   - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就是这么发的）。
-  - v1.10.x 的新增内容都在本插件不消费的层面：CodeArts 第三出口与媒体（生图/生视频）能力**默认关闭**（开启后产生的用量会按普通 usage 行进入统计，模型名照常显示）、429 响应新增 `X-RateLimit-Reset`（面向上游推理客户端，不是面板接口）、模型目录与计价快照更新、`usage.jsonl` 改为原子追加。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
+  - CodeArts 第三出口与媒体（生图/生视频）能力**默认关闭**；开启后产生的 CodeArts 用量归入 `hw` 和 `all`，模型名照常显示。v1.10.x 另有 429 响应新增 `X-RateLimit-Reset`（面向上游推理客户端，不是面板接口）、模型目录与计价快照更新、`usage.jsonl` 改为原子追加。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢
