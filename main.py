@@ -25,7 +25,6 @@ from .client import (
     HubError,
     HubProtocolError,
     HubRateLimitError,
-    HubUnavailableError,
     WorkBuddyClient,
 )
 from .models import DailyReport
@@ -55,7 +54,6 @@ CLOCK_SKEW_WARN_SECONDS = 120
 HUB_CLOCK_FRESH_SECONDS = 5.0
 
 # Exact user-facing error strings (plan §4).
-ERR_UNAUTHORIZED = "无权查询 WorkBuddy 用量。"
 ERR_NOT_CONFIGURED = "WorkBuddy 查询未配置，请联系管理员。"
 ERR_TRANSPORT = "WorkBuddy Hub 暂不可达，请稍后重试。"
 ERR_AUTH = "WorkBuddy Hub 认证失败，请联系管理员检查配置。"
@@ -106,14 +104,6 @@ def _id_set(value: object) -> set[str]:
     except Exception:  # noqa: BLE001 - never raise on odd input
         return set()
     return {text} if text else set()
-
-
-def _scalar_id(value: object) -> str:
-    """Best-effort single id extraction from an unknown value (never raises)."""
-    try:
-        return next(iter(_id_set(value)), "")
-    except Exception:  # noqa: BLE001 - never raise on odd input
-        return ""
 
 
 class WorkBuddyUsagePlugin(Star):
@@ -214,6 +204,9 @@ class WorkBuddyUsagePlugin(Star):
 
     # -- authorization -----------------------------------------------------------
 
+    def _allowlist(self, key: str, legacy_key: str) -> set[str]:
+        return _id_set(self._config.get(key)) | _id_set(self._config.get(legacy_key))
+
     def _event_ids(self, event: AstrMessageEvent) -> tuple[Optional[str], Optional[str]]:
         """Extract (sender_id, group_id) platform-agnostically.
 
@@ -274,14 +267,8 @@ class WorkBuddyUsagePlugin(Star):
             is_admin = False
 
         # Effective allowlists: new keys unioned with the legacy qq-only keys.
-        allowed_users = (
-            _id_set(self._config.get("allowed_users"))
-            | _id_set(self._config.get("allowed_qq_users"))
-        )
-        allowed_groups = (
-            _id_set(self._config.get("allowed_groups"))
-            | _id_set(self._config.get("allowed_qq_groups"))
-        )
+        allowed_users = self._allowlist("allowed_users", "allowed_qq_users")
+        allowed_groups = self._allowlist("allowed_groups", "allowed_qq_groups")
         allow_private = bool(self._config.get("allow_private", True))
         allow_admin = bool(self._config.get("allow_admin", True))
         ctx = (
@@ -290,31 +277,26 @@ class WorkBuddyUsagePlugin(Star):
         )
 
         private_chat = not group
-        if private_chat:
-            if not allow_private:
-                reason = "无权查询 WorkBuddy 用量。（私聊查询已被关闭：allow_private=false）"
-            elif is_admin:
-                if allow_admin:
-                    return ""
-                reason = "无权查询 WorkBuddy 用量。（管理员豁免已被 allow_admin=false 关闭）"
-            elif sender in allowed_users:
+        if private_chat and not allow_private:
+            reason = "无权查询 WorkBuddy 用量。（私聊查询已被关闭：allow_private=false）"
+        elif is_admin:
+            if allow_admin:
+                return ""
+            reason = "无权查询 WorkBuddy 用量。（管理员豁免已被 allow_admin=false 关闭）"
+        elif private_chat:
+            if sender in allowed_users:
                 return ""
             else:
                 reason = "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中）"
+        elif sender not in allowed_users:
+            reason = (
+                "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中；"
+                "群聊要求 allowed_users 与 allowed_groups 同时命中）"
+            )
+        elif group not in allowed_groups:
+            reason = "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
         else:
-            if is_admin:
-                if allow_admin:
-                    return ""
-                reason = "无权查询 WorkBuddy 用量。（管理员豁免已被 allow_admin=false 关闭）"
-            elif sender not in allowed_users:
-                reason = (
-                    "无权查询 WorkBuddy 用量。（你的账号不在 allowed_users 白名单中；"
-                    "群聊要求 allowed_users 与 allowed_groups 同时命中）"
-                )
-            elif group not in allowed_groups:
-                reason = "无权查询 WorkBuddy 用量。（本群不在 allowed_groups 白名单中）"
-            else:
-                return ""
+            return ""
 
         logger.info(
             "workbuddy_usage denied: %s | %s | users=%d groups=%d",
@@ -477,7 +459,6 @@ class WorkBuddyUsagePlugin(Star):
         # Gateway update notice: cheap GET /updates, derive the notice, and
         # (throttled) fire a background manual check. A failure here must
         # NEVER affect the report — degrade to no notice, log at info.
-        notice = ""
         if self._cfg_update_notice_enabled():
             try:
                 updates_payload = await self._client.fetch_updates()
@@ -663,8 +644,6 @@ class WorkBuddyUsagePlugin(Star):
                 yield event.plain_result(ERR_AUTH)
             except HubRateLimitError:
                 yield event.plain_result(ERR_RATE_LIMIT)
-            except HubUnavailableError:
-                yield event.plain_result(ERR_TRANSPORT)
             except HubProtocolError:
                 yield event.plain_result(ERR_SCHEMA)
             except HubError:
@@ -697,14 +676,8 @@ class WorkBuddyUsagePlugin(Star):
         group = str(raw_group) if raw_group else None
         private_chat = not group
 
-        allowed_users = (
-            _id_set(self._config.get("allowed_users"))
-            | _id_set(self._config.get("allowed_qq_users"))
-        )
-        allowed_groups = (
-            _id_set(self._config.get("allowed_groups"))
-            | _id_set(self._config.get("allowed_qq_groups"))
-        )
+        allowed_users = self._allowlist("allowed_users", "allowed_qq_users")
+        allowed_groups = self._allowlist("allowed_groups", "allowed_qq_groups")
         allowed_platforms = _id_set(self._config.get("allowed_platforms"))
 
         # Reuse the same reason logic, but WITHOUT emitting a duplicate log line

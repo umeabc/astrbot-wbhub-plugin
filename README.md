@@ -4,6 +4,8 @@ AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一�
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
+当前版本：**v1.3.7**。本次更新仅进行内部代码瘦身，用户可见行为不变。
+
 - 仓库：<https://github.com/umeabc/astrbot-wbhub-plugin>
 - 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts`（`X-Panel-Token` 认证）
 
@@ -225,8 +227,8 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.10.7** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。
-  - `/usage/analytics`：v1.7.12 → v1.10.7 逐版核对，payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段**没有改动**；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
+- **WorkBuddy Hub**：契约按 **v1.10.9** 校验（旧版本同样可用：新增字段缺失时对应状态只是不显示）。v1.10.7 → v1.10.9 源码对照，并核对 v1.10.8 / v1.10.9 变更记录：本插件消费的 `/usage/analytics`、`/accounts`、`/updates`、`/updates/check`、`/panel/login`、`/panel/logout` JSON 契约未变，无需改代码。
+  - `/usage/analytics`：v1.7.12 → v1.10.9 核对，payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段**没有改动**；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
   - `/accounts`：`Account.public()` 只增不减（期间新增了 `platform` / `product` / `note` / `proxySlot` / `lastErrorDetail` / `softStreak` / `lastFailFor` / `lastCheckin` 等，本插件不读）；本插件渲染的 `cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / `reserveBlocked` / `dailyLimitBlocked` / `creditLimitReached` / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain` 全部保留，`?realm=all` 仍返回全部区域的账号。
   - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就是这么发的）。
   - v1.10.x 的新增内容都在本插件不消费的层面：CodeArts 第三出口与媒体（生图/生视频）能力**默认关闭**（开启后产生的用量会按普通 usage 行进入统计，模型名照常显示）、429 响应新增 `X-RateLimit-Reset`（面向上游推理客户端，不是面板接口）、模型目录与计价快照更新、`usage.jsonl` 改为原子追加。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。

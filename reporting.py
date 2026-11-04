@@ -40,6 +40,20 @@ def _sanitize_name(name: object, fallback: str) -> str:
     return cleaned
 
 
+def _remaining_credits(credits: object) -> Decimal | None:
+    """Read a finite, non-bool balance from an optional credits object."""
+    if isinstance(credits, Mapping):
+        value = credits.get("remain")
+        if value is not None and not isinstance(value, bool):
+            try:
+                remaining = Decimal(str(value))
+                if remaining.is_finite():
+                    return remaining
+            except (ArithmeticError, ValueError, TypeError):
+                pass
+    return None
+
+
 def day_bounds(now: datetime, timezone: str) -> tuple[float, float]:
     """Return (since, until) epoch seconds covering the local day of ``now``.
 
@@ -267,17 +281,7 @@ def aggregate(
 
         # Remaining credit balance from credits.remain. This is the account's
         # balance, NOT today's consumption (window.credit). Missing/invalid → None.
-        remaining: Decimal | None = None
-        credits_obj = acct.get("credits")
-        if isinstance(credits_obj, Mapping):
-            raw_remain = credits_obj.get("remain")
-            if raw_remain is not None and not isinstance(raw_remain, bool):
-                try:
-                    d = Decimal(str(raw_remain))
-                    if d.is_finite():
-                        remaining = d
-                except (ArithmeticError, ValueError, TypeError):
-                    remaining = None
+        remaining = _remaining_credits(acct.get("credits"))
 
         uid = acct.get("uid", f"(unattributed-{idx})")
         is_placeholder = str(uid).strip().lower() in _PLACEHOLDER_UIDS
@@ -337,8 +341,7 @@ def aggregate(
         sum(known_balances, Decimal("0")) if known_balances else None
     )
 
-    # Sort: credits desc, then uid/model lexicographically.
-    accounts.sort(key=lambda a: (-a.credits, a.uid))
+    # Accounts are already sorted by merge_accounts_roster; sort models likewise.
     models.sort(key=lambda m: (-m.credits, m.model))
 
     # Reconciliation warnings — never alter totals, never double-sum axes.
@@ -546,10 +549,7 @@ def _maybe_with_status(
     row: AccountUsage, status_map: Mapping[str, str]
 ) -> AccountUsage:
     """Attach pre-rendered status to a row that does not have one yet."""
-    if row.status:
-        return row
-    status = status_map.get(row.uid, "")
-    if not status:
+    if row.status or not (status := status_map.get(row.uid, "")):
         return row
     return dataclasses_replace(row, status=status)
 
@@ -602,17 +602,8 @@ def merge_accounts_roster(
             if uid in listed_uids:
                 continue
             listed_uids.add(uid)
-            remaining: Decimal | None = None
             credits_obj = entry.get("credits")
-            if isinstance(credits_obj, Mapping):
-                raw_remain = credits_obj.get("remain")
-                if raw_remain is not None and not isinstance(raw_remain, bool):
-                    try:
-                        d = Decimal(str(raw_remain))
-                        if d.is_finite():
-                            remaining = d
-                    except (ArithmeticError, ValueError, TypeError):
-                        remaining = None
+            remaining = _remaining_credits(credits_obj)
             report_accounts.append(
                 AccountUsage(
                     uid=uid,
@@ -639,10 +630,6 @@ def format_credit(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
-
-
-def _fmt_int(value: int) -> str:
-    return f"{value:,}"
 
 
 def _window_line(report: DailyReport) -> str:
@@ -672,7 +659,7 @@ def format_report(report: DailyReport) -> str:
     # Cumulative all-time consumption; "—" when the Hub gave no all_time block.
     all_time_line = "累计消耗 Token：" + (
         "—" if report.total_tokens_all_time is None
-        else _fmt_int(report.total_tokens_all_time)
+        else f"{report.total_tokens_all_time:,}"
     )
     # Current pool balance, directly under the cumulative line. "—" when no
     # account reported a balance (0 would claim the pool is empty).
@@ -680,25 +667,15 @@ def format_report(report: DailyReport) -> str:
         "—" if report.available_credits is None
         else format_credit(report.available_credits)
     )
-    if report.range_label:
-        lines = [
-            f"WorkBuddy {report.range_label}用量",
-            _window_line(report),
-            f"{report.range_label}已消耗 Token：{_fmt_int(report.total_tokens)}",
-            f"{report.range_label}已消耗积分：{format_credit(report.total_credits)}",
-        ]
-        if report.detailed:
-            lines.append(all_time_line)
-            lines.append(available_line)
-    else:
-        lines = [
-            "WorkBuddy 当日用量",
-            report.day.isoformat(),
-            f"当日已消耗 Token：{_fmt_int(report.total_tokens)}",
-            f"当日已消耗积分：{format_credit(report.total_credits)}",
-            all_time_line,
-            available_line,
-        ]
+    label = report.range_label or "当日"
+    lines = [
+        f"WorkBuddy {label}用量",
+        _window_line(report) if report.range_label else report.day.isoformat(),
+        f"{label}已消耗 Token：{report.total_tokens:,}",
+        f"{label}已消耗积分：{format_credit(report.total_credits)}",
+    ]
+    if not report.range_label or report.detailed:
+        lines.extend((all_time_line, available_line))
     if report.accounts:
         lines.append(f"账号（{len(report.accounts)}）：")
         for a in report.accounts:
@@ -721,7 +698,7 @@ def format_report(report: DailyReport) -> str:
     if report.excluded_credits != 0 or report.excluded_tokens != 0:
         lines.append(
             f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
-            f"{_fmt_int(report.excluded_tokens)} Token"
+            f"{report.excluded_tokens:,} Token"
         )
     if report.models:
         lines.append("使用模型统计：")
@@ -729,7 +706,7 @@ def format_report(report: DailyReport) -> str:
             # Tokens and credits side by side: the credit figure alone hides
             # how much traffic produced it (cache hits and cheap models).
             lines.append(
-                f"{m.model}：{_fmt_int(m.tokens)} Token / {format_credit(m.credits)} 积分"
+                f"{m.model}：{m.tokens:,} Token / {format_credit(m.credits)} 积分"
             )
     else:
         lines.append(
@@ -779,9 +756,7 @@ def derive_update_notice(updates: Mapping[str, Any] | None) -> str:
         return ""
     candidate = parse_version_tuple(candidate_raw)
     current = parse_version_tuple(updates.get("current_version"))
-    if candidate is None or current is None:
-        return ""
-    if candidate <= current:
+    if candidate is None or current is None or candidate <= current:
         return ""
     return UPDATE_NOTICE_FORMAT.format(version=".".join(str(n) for n in candidate))
 

@@ -72,10 +72,6 @@ async def main() -> int:
     # (matching the plugin config default). Never accepted as a CLI argument.
     password = os.environ.get("WB_HUB_PASSWORD") or "admin"
     token = os.environ.get("WB_HUB_PANEL_TOKEN", "")
-    if not password and not token:
-        print("ERROR: set WB_HUB_PASSWORD (or WB_HUB_PANEL_TOKEN) in the environment.",
-              file=sys.stderr)
-        return EXIT_AUTH
 
     now = datetime.now(tz=ZoneInfo(args.timezone))
     tz = ZoneInfo(args.timezone)

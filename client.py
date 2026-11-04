@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone as dt_timezone
 from email.utils import parsedate_to_datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import aiohttp
 
@@ -102,37 +102,25 @@ def _validate_stat(raw: Any, where: str) -> Stat:
         raise HubProtocolError(f"stat is not an object: {where}")
     stat: Stat = {}
     # Mandatory numeric fields, validated strictly.
-    stat["requests"] = _to_int(raw.get("requests"), f"{where}.requests")
-    stat["errors"] = _to_int(raw.get("errors"), f"{where}.errors")
-    stat["prompt_tokens"] = _to_int(raw.get("prompt_tokens"), f"{where}.prompt_tokens")
-    stat["completion_tokens"] = _to_int(
-        raw.get("completion_tokens"), f"{where}.completion_tokens"
-    )
-    stat["reasoning_tokens"] = _to_int(
-        raw.get("reasoning_tokens"), f"{where}.reasoning_tokens"
-    )
-    stat["cached_tokens"] = _to_int(raw.get("cached_tokens"), f"{where}.cached_tokens")
-    stat["total_tokens"] = _to_int(raw.get("total_tokens"), f"{where}.total_tokens")
+    for key in (
+        "requests", "errors", "prompt_tokens", "completion_tokens",
+        "reasoning_tokens", "cached_tokens", "total_tokens",
+    ):
+        stat[key] = _to_int(raw.get(key), f"{where}.{key}")  # type: ignore[literal-required]
     # credit is mandatory and must never be null/missing: it is never defaulted
     # to zero because that would silently rewrite missing data.
     if "credit" not in raw or raw.get("credit") is None:
         raise HubProtocolError(f"missing credit: {where}")
     stat["credit"] = _to_decimal(raw["credit"], f"{where}.credit")
     # Optional / derived fields when present.
-    if raw.get("cost_cny") is not None:
-        stat["cost_cny"] = _to_decimal(raw["cost_cny"], f"{where}.cost_cny")
-    if raw.get("ttft_sum") is not None:
-        stat["ttft_sum"] = _to_float(raw["ttft_sum"], f"{where}.ttft_sum")
-    if raw.get("ttft_n") is not None:
-        stat["ttft_n"] = _to_int(raw["ttft_n"], f"{where}.ttft_n")
-    if raw.get("speed_sum") is not None:
-        stat["speed_sum"] = _to_float(raw["speed_sum"], f"{where}.speed_sum")
-    if raw.get("speed_n") is not None:
-        stat["speed_n"] = _to_int(raw["speed_n"], f"{where}.speed_n")
-    if raw.get("elapsed_sum") is not None:
-        stat["elapsed_sum"] = _to_float(raw["elapsed_sum"], f"{where}.elapsed_sum")
-    if raw.get("elapsed_n") is not None:
-        stat["elapsed_n"] = _to_int(raw["elapsed_n"], f"{where}.elapsed_n")
+    for key, convert in (
+        ("cost_cny", _to_decimal),
+        ("ttft_sum", _to_float), ("ttft_n", _to_int),
+        ("speed_sum", _to_float), ("speed_n", _to_int),
+        ("elapsed_sum", _to_float), ("elapsed_n", _to_int),
+    ):
+        if raw.get(key) is not None:
+            stat[key] = convert(raw[key], f"{where}.{key}")  # type: ignore[literal-required]
     for key in ("cache_hit_pct", "reasoning_ratio", "ttft_ms_avg", "speed_avg", "elapsed_ms_avg"):
         if raw.get(key) is not None:
             stat[key] = _to_float(raw[key], f"{where}.{key}")  # type: ignore[literal-required]
@@ -160,12 +148,9 @@ def _validate_account(raw: Any, where: str) -> AccountAnalytics:
     if not isinstance(uid, str) or not uid:
         raise HubProtocolError(f"invalid uid: {where}")
     acct: AccountAnalytics = {"uid": uid}
-    nickname = raw.get("nickname")
-    acct["nickname"] = nickname if isinstance(nickname, str) else ""
-    realm = raw.get("realm")
-    acct["realm"] = realm if isinstance(realm, str) else ""
-    domain = raw.get("domain")
-    acct["domain"] = domain if isinstance(domain, str) else ""
+    for key in ("nickname", "realm", "domain"):
+        value = raw.get(key)
+        acct[key] = value if isinstance(value, str) else ""  # type: ignore[literal-required]
     if raw.get("window") is not None:
         acct["window"] = _validate_stat(raw["window"], f"{where}.window")
     if raw.get("all_time") is not None:
@@ -451,22 +436,37 @@ class WorkBuddyClient:
         available, exactly one login+replay is attempted. A wrong password is
         never retried.
         """
+        raw = await self._fetch_json(
+            "get", "/usage/analytics", "analytics",
+            params_factory=lambda: {
+                "realm": "all",
+                "range": "custom",
+                "since": str(int(since)),
+                "until": str(int(until)),
+            },
+        )
+        return validate_analytics(raw)
+
+    async def _fetch_json(
+        self, method: str, path: str, operation: str, *,
+        params_factory: Callable[[], dict[str, str]] | None = None,
+        **kwargs: dict[str, str],
+    ) -> Any:
+        """Fetch a panel payload with one-shot token renewal and bounded JSON."""
         for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
             if not self._token:
                 if not self._password:
                     raise HubAuthError("no credentials configured")
                 await self._login_once()
-            params = {
-                "realm": "all",
-                "range": "custom",
-                "since": str(int(since)),
-                "until": str(int(until)),
-            }
+            # Rebuild windows after authentication on every attempt, outside
+            # transport handling so conversion errors keep their original type.
+            if params_factory is not None:
+                kwargs["params"] = params_factory()
             headers = {"X-Panel-Token": self._token}
             try:
-                async with self._session.get(
-                    self._url("/usage/analytics"),
-                    params=params,
+                async with getattr(self._session, method)(
+                    self._url(path),
+                    **{key: value.copy() for key, value in kwargs.items()},
                     headers=headers,
                     timeout=self._timeout,
                     proxy=self._proxy,
@@ -480,10 +480,10 @@ class WorkBuddyClient:
                     self._capture_hub_date(resp)
                     raw = await self._read_json(resp)
             except aiohttp.ClientError as exc:
-                raise HubUnavailableError("analytics transport failure") from exc
+                raise HubUnavailableError(f"{operation} transport failure") from exc
             except asyncio.TimeoutError as exc:
-                raise HubUnavailableError("analytics timeout") from exc
-            return validate_analytics(raw)
+                raise HubUnavailableError(f"{operation} timeout") from exc
+            return raw
         raise HubAuthError("authentication failed after token renewal")
 
     async def fetch_accounts(self) -> AccountsPayload:
@@ -497,34 +497,8 @@ class WorkBuddyClient:
         Same error taxonomy / chunked reader / caps / proxy handling as
         fetch_analytics, including the one-shot 401 login+replay.
         """
-        for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
-            if not self._token:
-                if not self._password:
-                    raise HubAuthError("no credentials configured")
-                await self._login_once()
-            headers = {"X-Panel-Token": self._token}
-            try:
-                async with self._session.get(
-                    self._url("/accounts"),
-                    params={"realm": "all"},
-                    headers=headers,
-                    timeout=self._timeout,
-                    proxy=self._proxy,
-                ) as resp:
-                    if resp.status == 401 and attempt == 0 and self._password:
-                        # Token likely expired: renew once and replay.
-                        self._token = ""
-                        await self._login_once()
-                        continue
-                    self._raise_for_status(resp)
-                    self._capture_hub_date(resp)
-                    raw = await self._read_json(resp)
-            except aiohttp.ClientError as exc:
-                raise HubUnavailableError("accounts transport failure") from exc
-            except asyncio.TimeoutError as exc:
-                raise HubUnavailableError("accounts timeout") from exc
-            return validate_accounts(raw)
-        raise HubAuthError("authentication failed after token renewal")
+        raw = await self._fetch_json("get", "/accounts", "accounts", params={"realm": "all"})
+        return validate_accounts(raw)
 
     async def fetch_updates(self) -> Mapping[str, Any]:
         """GET /updates — the Hub's update status (read-only, never runs a check).
@@ -541,33 +515,8 @@ class WorkBuddyClient:
         tolerant: unknown/absent fields are fine, only the top-level shape
         is enforced.
         """
-        for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
-            if not self._token:
-                if not self._password:
-                    raise HubAuthError("no credentials configured")
-                await self._login_once()
-            headers = {"X-Panel-Token": self._token}
-            try:
-                async with self._session.get(
-                    self._url("/updates"),
-                    headers=headers,
-                    timeout=self._timeout,
-                    proxy=self._proxy,
-                ) as resp:
-                    if resp.status == 401 and attempt == 0 and self._password:
-                        # Token likely expired: renew once and replay.
-                        self._token = ""
-                        await self._login_once()
-                        continue
-                    self._raise_for_status(resp)
-                    self._capture_hub_date(resp)
-                    raw = await self._read_json(resp)
-            except aiohttp.ClientError as exc:
-                raise HubUnavailableError("updates transport failure") from exc
-            except asyncio.TimeoutError as exc:
-                raise HubUnavailableError("updates timeout") from exc
-            return validate_updates(raw)
-        raise HubAuthError("authentication failed after token renewal")
+        raw = await self._fetch_json("get", "/updates", "updates")
+        return validate_updates(raw)
 
     async def check_updates(self) -> Mapping[str, Any]:
         """POST /updates/check (empty body) — run ONE bounded update check.
@@ -578,33 +527,8 @@ class WorkBuddyClient:
         The result is persisted in the Hub, so subsequent GET /updates calls
         report it. Error taxonomy and caps identical to fetch_updates.
         """
-        for attempt in range(_MAX_LOGIN_ATTEMPTS_ON_401 + 1):
-            if not self._token:
-                if not self._password:
-                    raise HubAuthError("no credentials configured")
-                await self._login_once()
-            headers = {"X-Panel-Token": self._token}
-            try:
-                async with self._session.post(
-                    self._url("/updates/check"),
-                    json={},
-                    headers=headers,
-                    timeout=self._timeout,
-                    proxy=self._proxy,
-                ) as resp:
-                    if resp.status == 401 and attempt == 0 and self._password:
-                        self._token = ""
-                        await self._login_once()
-                        continue
-                    self._raise_for_status(resp)
-                    self._capture_hub_date(resp)
-                    raw = await self._read_json(resp)
-            except aiohttp.ClientError as exc:
-                raise HubUnavailableError("updates-check transport failure") from exc
-            except asyncio.TimeoutError as exc:
-                raise HubUnavailableError("updates-check timeout") from exc
-            return validate_updates(raw)
-        raise HubAuthError("authentication failed after token renewal")
+        raw = await self._fetch_json("post", "/updates/check", "updates-check", json={})
+        return validate_updates(raw)
 
     async def logout(self) -> None:
         """Best-effort logout; failures are swallowed and never raise."""
