@@ -171,3 +171,9 @@ class DailyReport:
     detailed: bool = True
     # cn keeps the original template; all renders only token statistics.
     channel: str = "cn"
+    # False when the channel does not record per-request credit (CodeArts):
+    # its usage rows all carry credit=0.0 and no credits object, so every
+    # 积分 figure derived from them would be a made-up zero. Such reports
+    # print tokens only and omit the 已消耗积分 line; the BALANCE lines stay,
+    # because the CodeArts roster does report credits.remain.
+    credits_reported: bool = True

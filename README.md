@@ -1,10 +1,10 @@
 # astrbot-wbhub-plugin
 
-AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的用量报表 —— 默认 WorkBuddy 国内版当日，也可以选择国际版、CodeArts 或全渠道，以及近 1/3/7/30 天、本周、本月或全部时间。单渠道包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）；全渠道只汇总 Token。
+AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一条 `/wb`，查询 **WorkBuddy Hub** 单实例的用量报表 —— 默认 WorkBuddy 国内版当日，也可以选择国际版、CodeArts 或全渠道，以及最近 24 小时、近 3/7/30 天、本周、本月或全部时间。单渠道包括总 Token、总积分、累计 Token、每个账号的消耗与余额、按模型统计，以及**账号当前是否可用**（熔断 / 风控 / 限流 / 停单等）；全渠道只汇总 Token。
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
-当前版本：**v1.3.8**。新增 `/wb cn`、`/wb int`、`/wb hw`、`/wb all` 渠道选择；原有 `/wb 0`、`/wb 7` 等写法默认国内版。注意：单独 `/wb all` 现在表示全渠道当日，国内版全部时间请用 `/wb cn all`。
+当前版本：**v1.3.9**。`/wb 1` 改为**最近 24 小时滚动窗口**（不再是「今天 00:00 起」），与默认的当日视图彻底区分；CodeArts（`hw`）不再输出「0 积分」噪声。渠道选择见 v1.3.8：`/wb cn`、`/wb int`、`/wb hw`、`/wb all`；单独 `/wb all` 表示全渠道当日，国内版全部时间请用 `/wb cn all`。
 
 - 仓库：<https://github.com/umeabc/astrbot-wbhub-plugin>
 - 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts` / `/codearts/accounts`（`X-Panel-Token` 认证）
@@ -17,7 +17,7 @@ AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一�
 
 | 能力 | 说明 |
 | --- | --- |
-| `/wb [渠道] [参数]` | 输出用量报表（渠道 `cn`/`int`/`hw`/`all`，默认 `cn`；不填参数为当日，`0` 同默认、`1` 近 1 天、`3`/`7`/`30` 近 N 天、`week`/`month`/`all` 选区间，`help` 看帮助）。一次一条，过长则分页 |
+| `/wb [渠道] [参数]` | 输出用量报表（渠道 `cn`/`int`/`hw`/`all`，默认 `cn`；不填参数为当日，`0` 同默认、`1` 最近 24 小时、`3`/`7`/`30` 近 N 天、`week`/`month`/`all` 选区间，`help` 看帮助）。一次一条，过长则分页 |
 | `/wbdiag` | 自诊断：打印插件看到的适配器、发送者 ID、群 ID、是否管理员、判定结果。**不受白名单限制**，被拒绝的人也能用它排查 |
 | 账号状态 | 熔断 / 降级 / 冷却 / 单模型 429 / 额度用满 / 风控限制 / 凭证过期 / 停单 / 已禁用模型 / 连续失败，正常账号不显示任何多余字符 |
 | 分页 | 账号或模型很多时按行分页成多条消息（`[WorkBuddy i/N]`），**不截断任何一条** |
@@ -88,7 +88,7 @@ tzdata>=2024.1
 
 全渠道报表不显示积分、账号明细、余额或账号状态；需要这些信息时，分别查询 `cn`、`int`、`hw`。渠道选择不新增配置项，也不改变权限、冷却和分页规则。
 
-CodeArts 上游用量经常只有 Token，没有积分（`credit`）。`hw` 的账号行因此同时显示 Token 与积分，例如 `已消耗 3,333 Token / 0 积分`；已删除但窗口内有 Token 消耗的账号也会保留。`cn`、`int` 的账号行继续沿用原有积分模板。
+CodeArts 的 usage 行**只记 Token**：实操中每条记录的 `credit` 都是 `0`，也没有 `credits` 对象（真机 2.0.6 验证）。所以 `hw` 只输出 Token —— 表头没有「已消耗积分」行，账号行是 `已消耗 3,333 Token`，模型行是 `3,333 Token`；**余额仍然显示**（CodeArts 的 `credits.remain` 由独立账号接口提供）。已删除但窗口内有 Token 消耗的账号也会保留。`cn`、`int` 的账号行继续沿用原有积分模板。
 
 ### 区间参数
 
@@ -96,7 +96,7 @@ CodeArts 上游用量经常只有 Token，没有积分（`credit`）。`hw` 的�
 | --- | --- | --- |
 | （不填） | 当日 00:00 起（`today` 等价） | 当日模板 |
 | `0` | 同不填，逐字节一致 | 当日模板 |
-| `1` | 近 1 天（今天 00:00 起） | 区间模板（与当日模板不同的标题/文案） |
+| `1` | **最近 24 小时**（now−24h → now，含昨晚） | 区间模板（与当日模板不同的标题/文案） |
 | `3` / `7` / `30` | 近 3 / 7 / 30 天（含今天） | 区间模板 |
 | `week` | 本周（周一 00:00 起） | 区间模板 |
 | `month` | 本月（1 日 00:00 起） | 区间模板 |
@@ -116,7 +116,7 @@ CodeArts 上游用量经常只有 Token，没有积分（`credit`）。`hw` 的�
 
 CodeArts 的 `cooling=true` 在不填参数、`0`、`1` 时只显示 `【冷却】`，宽窗口隐藏；上游 `until` 没有时区，插件不据此推算恢复时间。
 
-`/wb 1` 与 `/wb` 是同一天窗口，但按区间模板输出，所以两者不会长得一样。
+`/wb 1` 是**滚动 24 小时**窗口，会跨两个日历日（例如 11-08 ~ 11-09），因此数字必然与 `/wb`（今天 00:00 起）不同；它同时保留累计 Token / 可用积分 / 账号余额 / 实时状态。
 
 `/wb 7` 的示例输出（没有累计/余额/429，模型行同时给 Token 与积分）：
 
@@ -251,11 +251,15 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按 **v1.10.9** 校验（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.7 → v1.10.9 源码对照，并核对 v1.10.8 / v1.10.9 变更记录：原有 `/usage/analytics`、`/accounts`、`/updates`、`/updates/check`、`/panel/login`、`/panel/logout` JSON 契约未变；插件 v1.3.8 新增使用 `/codearts/accounts`。
-  - `/usage/analytics`：v1.7.12 → v1.10.9 核对，payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段**没有改动**；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
-  - `/accounts`：`Account.public()` 只增不减（期间新增了 `platform` / `product` / `note` / `proxySlot` / `lastErrorDetail` / `softStreak` / `lastFailFor` / `lastCheckin` 等，本插件不读）；本插件渲染的 `cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / `reserveBlocked` / `dailyLimitBlocked` / `creditLimitReached` / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain` 全部保留，`?realm=all` 仍返回 WorkBuddy 全部区域的账号，CodeArts 账号需用独立接口。
-  - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就是这么发的）。
-  - CodeArts 第三出口与媒体（生图/生视频）能力**默认关闭**；开启后产生的 CodeArts 用量归入 `hw` 和 `all`，模型名照常显示。v1.10.x 另有 429 响应新增 `X-RateLimit-Reset`（面向上游推理客户端，不是面板接口）、模型目录与计价快照更新、`usage.jsonl` 改为原子追加。另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
+- **WorkBuddy Hub**：契约按上游**官方正式发布 tag [v2.0.6](https://github.com/ardeyouxipianyi/workbuddy2api-hub/tree/v2.0.6)** 源码复核；此前已在运行 2.0.6 的运维实例上逐条验证（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.9 → 官方 tag v2.0.6 源码对照（以下真机结果为此前部署的观测）：
+  - `/usage/analytics`：`_new_analytics_stat()`、`_get_usage_analytics()`、`compute_usage_analytics()`、`range_window()` 与 v1.10.9 **逐字节相同**；v1.7.12 → 2.0.6 期间 payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段没有改动；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
+  - `/accounts`：2.0.x 只在响应里**增加**字段 —— `Account.public()` 新增 `group` / `poolScope` / `hasDeviceToken`，`account_views()` 将 `poolScope` 规范化为 `text` / `media`（v2.0.2 的文体池分离）；顶层新增 `text_ready` / `media_ready`，`usable` 改为文本池就绪数（此前真机 2.0.6 部署未返回两个新增计数，仅有 `usable`；官方 tag 源码明确返回三者）。插件报表不使用 `usable` / `text_ready` / `media_ready` / `poolScope`，渲染字段（`cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / 三种停单 / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain`）全部保留。
+  - `/codearts/accounts`：响应仍是 `{provider, accounts, stats, models, base_url}`；账号行仍是 `uid` / `credits.remain` / `disabled`（插件把 `disabled` 归一成 `enabled`）等，**没有 `realm`**，插件按独立接口补 `realm="codearts"`。`CodeArtsAccount.view()` 与 v1.10.9 逐字节相同；新增的 `manual_disabled` 仅用于内部状态及持久化，不出现在公开视图中，手动停用仍通过 `disabled` 表达。它的 `until` 是无时区字符串，插件不据此推算恢复时间。
+  - `/updates` / `/updates/check`：`_get_updates()`、`_route_update_check()` 及 `wb_updates` 的 `status()` / `check()` 与 v1.10.9 相同，插件消费的版本提示字段和手动检查契约不变。
+  - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就这么发的）；`/panel/login` / `/panel/logout` 所在的 `_handle_panel()` 及 token 校验函数与 v1.10.9 相同，退出仍撤销 token 并返回 `{ok: true}`。
+  - v2.0.x 的新增内容都在本插件不消费的层面：文体池分离与媒体（生图/生视频）能力、TLS 指纹（Go/uTLS）、设备 token、桌面端 chat 兼容头、Responses 历史合并、打包方式。媒体与 CodeArts 出口默认关闭；开启后产生的用量按普通 usage 行进入统计，模型名照常显示。
+  - **CodeArts 只记 Token**：其 usage 行的 `credit` 恒为 `0`、且没有 `credits` 对象（真机 2.0.6 验证），因此 `hw` 报表不再显示「已消耗积分」和「/ 0 积分」，只显示 Token 与余额。
+  - 另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
 ## 许可与致谢

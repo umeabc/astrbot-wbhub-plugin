@@ -529,6 +529,9 @@ class WorkBuddyUsagePlugin(Star):
             range_end=datetime.fromtimestamp(until, tz),
             detailed=spec.is_detailed,
             channel=channel,
+            # CodeArts records tokens only: its usage rows have credit=0.0 and
+            # no credits object, so a credit column would be fabricated.
+            credits_reported=channel != "hw",
         )
 
     def report_notice(self) -> str:
@@ -589,7 +592,7 @@ class WorkBuddyUsagePlugin(Star):
                 "[WorkBuddy 用量查询]",
                 "/wb          当日用量（默认）",
                 "/wb 0        同 /wb",
-                "/wb 1        近 1 天（今日）",
+                "/wb 1        最近 24 小时（滚动窗口，含昨晚）",
                 "/wb 3        近 3 天",
                 "/wb 7        近 7 天",
                 "/wb 30       近 30 天",

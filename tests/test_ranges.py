@@ -61,11 +61,12 @@ class TestParseRangeArg:
         assert spec.label == f"近 {n} 天"
         assert not spec.is_default and not spec.is_all_time
 
-    def test_zero_is_the_default_and_one_is_a_day_window(self):
+    def test_zero_is_the_default_and_one_is_a_rolling_window(self):
         assert parse_range_arg("0") is RANGE_TODAY
         one = parse_range_arg("1")
-        assert one.key == "1" and one.label == "近 1 天"
-        assert one.is_detailed          # /wb 1 keeps the current-state block
+        assert one.key == "1" and one.label == "最近 24 小时"
+        assert one.rolling_hours == 24   # NOT the calendar day /wb covers
+        assert one.is_detailed           # /wb 1 keeps the current-state block
         assert not parse_range_arg("3").is_detailed
         assert RANGE_TODAY.is_detailed
 
@@ -101,7 +102,6 @@ class TestRangeBounds:
     @pytest.mark.parametrize(
         "token, first_day",
         [
-            ("1", date(2026, 10, 28)),   # today only
             ("3", date(2026, 10, 26)),   # today + 2 previous days
             ("7", date(2026, 10, 22)),
             ("30", date(2026, 9, 29)),
@@ -123,6 +123,15 @@ class TestRangeBounds:
     def test_month_starts_on_the_first(self):
         since, _ = range_bounds(RANGE_MONTH, NOW, TZ)
         assert since == ts(date(2026, 10, 1))
+
+    def test_one_is_a_rolling_24h_window_not_the_calendar_day(self):
+        since, until = range_bounds(parse_range_arg("1"), NOW, TZ)
+        assert until == NOW.timestamp()
+        assert since == NOW.timestamp() - 24 * 3600
+        # It therefore reaches into the previous day, unlike /wb.
+        assert since < ts(date(2026, 10, 27)) + 24 * 3600
+        today_since, _ = range_bounds(RANGE_TODAY, NOW, TZ)
+        assert since < today_since
 
     def test_all_has_no_lower_bound(self):
         since, until = range_bounds(RANGE_ALL, NOW, TZ)
@@ -452,8 +461,9 @@ class TestDetailedViews:
         wire(plugin, stub_hub, session)
         text = text_of(await run(plugin, "/wb 1"))
         lines = text.splitlines()
-        assert lines[0] == "WorkBuddy 近 1 天用量"
-        assert lines[1] == datetime.now(TZ_OBJ).date().isoformat()
+        assert lines[0] == "WorkBuddy 最近 24 小时用量"
+        # A rolling window always spans two dates in practice.
+        assert " ~ " in lines[1]
         assert "累计消耗 Token：" in text
         assert "剩余 42.5 积分" in text
         assert "model-x被429" in text

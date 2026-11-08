@@ -102,6 +102,11 @@ class RangeSpec:
 
     key: str
     label: str
+    # Set only for /wb 1: a true rolling window (now - N hours .. now) instead
+    # of a calendar day. /wb 1 and /wb would otherwise cover the exact same
+    # hours and print identical numbers, which made the two commands
+    # indistinguishable in practice.
+    rolling_hours: int = 0
 
     @property
     def is_default(self) -> bool:
@@ -115,9 +120,9 @@ class RangeSpec:
     def is_detailed(self) -> bool:
         """True for the three views that also show current-state info.
 
-        /wb and /wb 0 (key "today") and /wb 1 share the same day-long window
-        and print the cumulative total, the per-account balance and the
-        429 / risk-control status; every wider window prints consumption only.
+        /wb and /wb 0 (key "today") and /wb 1 print the cumulative total, the
+        per-account balance and the 429 / risk-control status; every wider
+        window prints consumption only.
         """
         return self.key in ("today", "1")
 
@@ -126,8 +131,11 @@ RANGE_TODAY = RangeSpec("today", "当日")
 RANGE_ALL = RangeSpec("all", "全部时间")
 RANGE_WEEK = RangeSpec("week", "本周")
 RANGE_MONTH = RangeSpec("month", "本月")
+# 24 rolling hours, not "today": /wb already covers the calendar day, and a
+# second command showing the same numbers is not a second command.
+RANGE_LAST_DAY = RangeSpec("1", "最近 24 小时", rolling_hours=24)
 
-_ROLLING_DAYS = {str(n): RangeSpec(str(n), f"近 {n} 天") for n in (1, 3, 7, 30)}
+_ROLLING_DAYS = {str(n): RangeSpec(str(n), f"近 {n} 天") for n in (3, 7, 30)}
 _RANGE_BY_TOKEN = {
     "": RANGE_TODAY,
     # "0" is an explicit spelling of the default: identical output, including
@@ -137,6 +145,7 @@ _RANGE_BY_TOKEN = {
     "week": RANGE_WEEK,
     "month": RANGE_MONTH,
     "all": RANGE_ALL,
+    "1": RANGE_LAST_DAY,
     **_ROLLING_DAYS,
 }
 HELP_TOKENS = frozenset({"help", "?", "-h", "--help"})
@@ -158,7 +167,7 @@ def parse_range_arg(token: str) -> RangeSpec:
     """Map one /wb argument to a RangeSpec; "" means the default (today).
 
     Raises HelpRequested for help tokens and BadRange for everything else.
-    Deliberately strict — no numeric weight other than 3/7/30 — because
+    Deliberately strict — no numeric weight other than 1/3/7/30 — because
     silently mapping "5" onto 3 days would report a window the caller never
     asked for.
     """
@@ -197,7 +206,9 @@ def range_bounds(spec: RangeSpec, now: datetime, timezone: str) -> tuple[float, 
     "3" = today plus the two previous days, "week" starts Monday, "month"
     starts on the 1st. "all" is unbounded below (epoch 0, which the Hub's
     ``range=custom`` reads as "no lower bound"); its upper bound is the same
-    "now" as every other window.
+    "now" as every other window. "1" is the exception: a rolling 24-hour
+    window ending now, deliberately NOT the calendar day that /wb already
+    covers.
     """
     if spec.is_default:
         return day_bounds(now, timezone)
@@ -205,6 +216,10 @@ def range_bounds(spec: RangeSpec, now: datetime, timezone: str) -> tuple[float, 
     local = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
     if spec.is_all_time:
         return 0.0, local.timestamp()
+    if spec.rolling_hours:
+        # A rolling window, not a calendar one: the caller asked for "the last
+        # 24 hours", which includes yesterday evening.
+        return local.timestamp() - spec.rolling_hours * 3600, local.timestamp()
     anchor = local.date()
     if spec.key == RANGE_WEEK.key:
         anchor -= timedelta(days=anchor.weekday())
@@ -228,6 +243,7 @@ def aggregate(
     range_end: datetime | None = None,
     detailed: bool = True,
     channel: str = "cn",
+    credits_reported: bool = True,
 ) -> DailyReport:
     """Build a DailyReport from a validated analytics payload.
 
@@ -249,7 +265,10 @@ def aggregate(
       merge_accounts_roster) so a multi-day total can be explained;
     - detailed=False suppresses the current-state extras (cumulative total,
       per-account balance, 429 / risk-control status) — those are rendered by
-      format_report from this flag.
+      format_report from this flag;
+    - credits_reported=False marks a channel whose usage rows never carry a
+      real credit figure (CodeArts). format_report then prints tokens only
+      instead of a column of fabricated zeros.
     """
     warnings: list[str] = []
     summary_window = payload.get("summary", {}).get("window", {})
@@ -395,6 +414,7 @@ def aggregate(
         available_credits=available_credits,
         detailed=detailed,
         channel=channel,
+        credits_reported=credits_reported,
     )
 
 
@@ -720,8 +740,11 @@ def format_report(report: DailyReport) -> str:
         f"{title} {label}用量",
         _window_line(report) if report.range_label else report.day.isoformat(),
         f"{label}已消耗 Token：{report.total_tokens:,}",
-        f"{label}已消耗积分：{format_credit(report.total_credits)}",
     ]
+    # CodeArts usage rows carry no credit figure at all; printing the resulting
+    # zero would read as "you spent nothing", which is the opposite of true.
+    if report.credits_reported:
+        lines.append(f"{label}已消耗积分：{format_credit(report.total_credits)}")
     if not report.range_label or report.detailed:
         lines.extend((all_time_line, available_line))
     if report.accounts:
@@ -738,25 +761,36 @@ def format_report(report: DailyReport) -> str:
                 tail = f"，剩余 {remain} 积分"
             else:
                 tail = ""
-            consumed = f"{format_credit(a.credits)} 积分"
             if report.channel == "hw":
-                consumed = f"{a.tokens:,} Token / {consumed}"
+                # Tokens are the only consumption figure CodeArts reports.
+                consumed = f"{a.tokens:,} Token"
+            else:
+                consumed = f"{format_credit(a.credits)} 积分"
             lines.append(f"{a.uid[:8]}{realm}{status}：已消耗 {consumed}{tail}")
     else:
         lines.append("账号：无账号")
-    if report.excluded_credits != 0 or report.excluded_tokens != 0:
-        lines.append(
-            f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
-            f"{report.excluded_tokens:,} Token"
-        )
+    if report.excluded_tokens != 0 or (
+        report.credits_reported and report.excluded_credits != 0
+    ):
+        if report.credits_reported:
+            lines.append(
+                f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
+                f"{report.excluded_tokens:,} Token"
+            )
+        else:
+            lines.append(f"未归属消耗：{report.excluded_tokens:,} Token")
     if report.models:
         lines.append("使用模型统计：")
         for m in report.models:
             # Tokens and credits side by side: the credit figure alone hides
             # how much traffic produced it (cache hits and cheap models).
-            lines.append(
-                f"{m.model}：{m.tokens:,} Token / {format_credit(m.credits)} 积分"
-            )
+            # Without a credit figure, tokens alone still say what ran.
+            if report.credits_reported:
+                lines.append(
+                    f"{m.model}：{m.tokens:,} Token / {format_credit(m.credits)} 积分"
+                )
+            else:
+                lines.append(f"{m.model}：{m.tokens:,} Token")
     else:
         lines.append(
             "使用模型统计：今日暂无用量"
