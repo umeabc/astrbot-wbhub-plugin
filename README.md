@@ -4,7 +4,7 @@ AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一�
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
-当前版本：**v1.3.9**。`/wb 1` 改为**最近 24 小时滚动窗口**（不再是「今天 00:00 起」），与默认的当日视图彻底区分；CodeArts（`hw`）不再输出「0 积分」噪声。渠道选择见 v1.3.8：`/wb cn`、`/wb int`、`/wb hw`、`/wb all`；单独 `/wb all` 表示全渠道当日，国内版全部时间请用 `/wb cn all`。
+当前版本：**v1.3.11**。适配 Hub v2.1.1：持久封禁显示「已封禁，需手动启用」，详细与宽区间视图均保留，兼容旧版风控倒计时。`/wb 1` 改为**最近 24 小时滚动窗口**（不再是「今天 00:00 起」），与默认的当日视图彻底区分；CodeArts（`hw`）不再输出「0 积分」噪声。渠道选择见 v1.3.8：`/wb cn`、`/wb int`、`/wb hw`、`/wb all`；单独 `/wb all` 表示全渠道当日，国内版全部时间请用 `/wb cn all`。
 
 - 仓库：<https://github.com/umeabc/astrbot-wbhub-plugin>
 - 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts` / `/codearts/accounts`（`X-Panel-Token` 认证）
@@ -251,13 +251,18 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按上游**官方正式发布 tag [v2.0.6](https://github.com/ardeyouxipianyi/workbuddy2api-hub/tree/v2.0.6)** 源码复核；此前已在运行 2.0.6 的运维实例上逐条验证（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.9 → 官方 tag v2.0.6 源码对照（以下真机结果为此前部署的观测）：
+- **WorkBuddy Hub**：契约按上游**官方正式发布 tag [v2.1.1](https://github.com/ardeyouxipianyi/workbuddy2api-hub/tree/v2.1.1)** 源码复核；此前已在运行 2.0.6 的运维实例上逐条验证（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.9 → 官方 tag v2.0.6 源码对照及 v2.0.8 → v2.1.1 增量复核（以下真机结果为此前部署的观测）：
   - `/usage/analytics`：`_new_analytics_stat()`、`_get_usage_analytics()`、`compute_usage_analytics()`、`range_window()` 与 v1.10.9 **逐字节相同**；v1.7.12 → 2.0.6 期间 payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段没有改动；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
-  - `/accounts`：2.0.x 只在响应里**增加**字段 —— `Account.public()` 新增 `group` / `poolScope` / `hasDeviceToken`，`account_views()` 将 `poolScope` 规范化为 `text` / `media`（v2.0.2 的文体池分离）；顶层新增 `text_ready` / `media_ready`，`usable` 改为文本池就绪数（此前真机 2.0.6 部署未返回两个新增计数，仅有 `usable`；官方 tag 源码明确返回三者）。插件报表不使用 `usable` / `text_ready` / `media_ready` / `poolScope`，渲染字段（`cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor` / `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / 三种停单 / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain`）全部保留。
+  - `/accounts`：截至 v2.0.8 的 2.0.x 变更只在响应里**增加**字段 —— `Account.public()` 新增 `group` / `poolScope` / `hasDeviceToken`，`account_views()` 将 `poolScope` 规范化为 `text` / `media`（v2.0.2 的文体池分离）；顶层新增 `text_ready` / `media_ready`，`usable` 改为文本池就绪数（此前真机 2.0.6 部署未返回两个新增计数，仅有 `usable`；官方 tag 源码明确返回三者）。插件报表不使用 `usable` / `text_ready` / `media_ready` / `poolScope`，渲染字段（`cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor`（旧版）/ `accountBanned`（v2.1.0+）/ `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / 三种停单 / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain`）除下述风控字段替换外均保留。
   - `/codearts/accounts`：响应仍是 `{provider, accounts, stats, models, base_url}`；账号行仍是 `uid` / `credits.remain` / `disabled`（插件把 `disabled` 归一成 `enabled`）等，**没有 `realm`**，插件按独立接口补 `realm="codearts"`。`CodeArtsAccount.view()` 与 v1.10.9 逐字节相同；新增的 `manual_disabled` 仅用于内部状态及持久化，不出现在公开视图中，手动停用仍通过 `disabled` 表达。它的 `until` 是无时区字符串，插件不据此推算恢复时间。
   - `/updates` / `/updates/check`：`_get_updates()`、`_route_update_check()` 及 `wb_updates` 的 `status()` / `check()` 与 v1.10.9 相同，插件消费的版本提示字段和手动检查契约不变。
   - 鉴权未变：`POST /panel/login` 换 token，之后一律用 `X-Panel-Token` 头（本插件从 v1.0 起就这么发的）；`/panel/login` / `/panel/logout` 所在的 `_handle_panel()` 及 token 校验函数与 v1.10.9 相同，退出仍撤销 token 并返回 `{ok: true}`。
-  - v2.0.x 的新增内容都在本插件不消费的层面：文体池分离与媒体（生图/生视频）能力、TLS 指纹（Go/uTLS）、设备 token、桌面端 chat 兼容头、Responses 历史合并、打包方式。媒体与 CodeArts 出口默认关闭；开启后产生的用量按普通 usage 行进入统计，模型名照常显示。
+  - 此前 v2.0.1～v2.0.8 的新增内容都在本插件不消费的层面：文体池分离与媒体（生图/生视频）能力、TLS 指纹（Go/uTLS）、设备 token、桌面端 chat 兼容头、Responses 历史合并、打包方式。媒体与 CodeArts 出口默认关闭；开启后产生的用量按普通 usage 行进入统计，模型名照常显示。
+  - v2.0.6 → v2.0.8 源码复核：v2.0.7 的会话粘滞键默认开启、v2.0.7 / v2.0.8 的 `x-anthropic-billing-header` / `x-anthropic-billing-hdr` 清洗修改请求派发与内容处理；面板 `X-Robots-Tag` 和账号表列固定仅涉及 HTML 响应头与样式，对插件无影响。上述 analytics 四个函数、账号视图及顶层计数、CodeArts 视图、更新与登录/退出契约均未变，无需调整插件校验。
+  - v2.0.8 → v2.1.1 本地官方 tag 源码逐函数复核：上述 analytics 四个函数、`account_views()`、`_get_accounts()`（含 `usable` / `text_ready` / `media_ready`）、`CodeArtsAccount.view()` / `_get_codearts_accounts()`、更新与登录/退出处理函数均未变；在插件消费的契约范围内，除以下封禁迁移外未发现其他破坏性变化。
+  - **v2.0.9**：TLS 出站默认 auto、桥生命周期及请求清洗范围调整属于请求路径；`/health`、`/settings`、`/panel/status` 新增脱敏 `outbound_tls` 状态，本插件（含探测工具）不调用这三个端点，不影响所消费的面板 JSON 契约。
+  - **v2.1.0**：`Account.public()` **移除 `restrictedFor`，改为 `accountBanned` + `bannedAt`**。403 / 11140 改为持久封禁，只能通过面板手动启用解除；`cooldownFor` / `inCooldown` 也不再包含旧风控截止时间。插件同时兼容两种字段：`accountBanned is True` 显示「已封禁，需手动启用」，在宽区间也显示；与 `enabled=False` 并存只显示更具体的封禁，与 `restrictedFor` 并存不显示旧风控恢复时间。未封禁时旧 Hub（v1.7.19～v2.0.8）的「上游风控限制，{time} 恢复」文案不变。`bannedAt` 是绝对 epoch 或 null，表示封禁发生时间，不是恢复期限，不渲染。批量治理、自动化页面拆分和导入任务变更不改变插件消费端点的其他契约。
+  - **v2.1.1**：每日活跃自动模型回退、桌面/网页共用候选序列、免费模型目录补全及 DSH 视觉声明修正属于自动任务、请求路径或看板配置，不改变本插件消费的面板 JSON 契约。本次仅做本地源码与离线测试验证，未声称已在 v2.1.1 真机验收。
   - **CodeArts 只记 Token**：其 usage 行的 `credit` 恒为 `0`、且没有 `credits` 对象（真机 2.0.6 验证），因此 `hw` 报表不再显示「已消耗积分」和「/ 0 积分」，只显示 Token 与余额。
   - 另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。

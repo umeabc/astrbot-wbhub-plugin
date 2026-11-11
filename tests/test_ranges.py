@@ -481,6 +481,20 @@ class TestDetailedViews:
             assert "冷却，" not in text, arg
             assert "近" in text or "本周" in text or "本月" in text or "全部" in text
 
+    @pytest.mark.parametrize("arg", ["0", "1", "3", "7", "30", "week", "month", "all"])
+    async def test_ban_is_kept_in_all_windows(self, stub_hub, session, arg):
+        self.setup_stub(stub_hub)
+        stub_hub.accounts_body["accounts"][0].update(
+            accountBanned=True, bannedAt=1760685780, enabled=False,
+            restrictedFor=7200,
+        )
+        plugin = make_plugin()
+        wire(plugin, stub_hub, session)
+        text = text_of(await run(plugin, f"/wb cn {arg}"))
+        assert "已封禁，需手动启用" in text
+        assert "已停用" not in text
+        assert "上游风控限制" not in text
+
     async def test_structural_status_is_kept_in_wide_windows(self, stub_hub, session):
         # Expired credentials are a structural fact, not a timed recovery
         # state: wide windows still surface them.

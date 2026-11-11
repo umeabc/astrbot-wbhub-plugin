@@ -458,12 +458,18 @@ def status_segments(
     include_live_state=False drops every segment that carries a *recovery
     time* — upstream risk control (11140), breaker, degrade, account
     cooldown, per-model 429 / 6004 quota — plus the "近期429" history
-    fallback. Structural facts stay: expired credential, disabled, the three
+    fallback. Structural facts stay: expired credential, disabled/banned, the three
     stop flags, disabled models and the failure streak. Wider /wb windows
     use that: a month of usage should not be decorated with a cooldown that
     expires in ten minutes.
 
-    UNITS: cooldownFor / breakerFor / degradeFor are RELATIVE seconds (base =
+    accountBanned=True adds "已封禁，需手动启用" even in wide windows.
+    It supersedes disabled and legacy restrictedFor to avoid duplicate or
+    contradictory recovery advice. bannedAt is an absolute event epoch, not
+    a recovery deadline, and is not rendered. Older Hubs keep their original
+    restrictedFor wording when accountBanned is not True.
+
+    UNITS: restrictedFor / cooldownFor / breakerFor / degradeFor are RELATIVE seconds (base =
     the /accounts response's Hub clock, falling back to the local UTC clock
     when unavailable); modelCooldowns[].expiresAt / cappedAt are ABSOLUTE
     epochs rendered AS-IS.
@@ -489,22 +495,26 @@ def status_segments(
     #    the account unusable regardless of the enabled flag.
     if account.get("tokenExpired") is True or account.get("needRelogin") is True:
         segments.append("凭证过期，需重新登录")
-    # 2. enabled=false → 已停用 (no time)
-    if account.get("enabled") is False:
+    # 2. Persistent ban / enabled=false (no time). A ban need not disable
+    #    the enabled flag; when both apply, show the more specific blocker.
+    banned = account.get("accountBanned") is True
+    if banned:
+        segments.append("已封禁，需手动启用")
+    elif account.get("enabled") is False:
         segments.append("已停用")
     # 3. restrictedFor → 上游风控限制，{time} 恢复. v1.7.19 added this
     #    RELATIVE-seconds field (upstream account-level risk control,
     #    code 11140); it outranks a self-inflicted breaker. A 429/风控
     #    segment: omitted from wide windows.
-    if include_live_state and (t := rel(account.get("restrictedFor"))) is not None:
+    if include_live_state and not banned and (t := rel(account.get("restrictedFor"))) is not None:
         segments.append(f"上游风控限制，{t} 恢复")
     # 4. breakerFor → 熔断，{time} 恢复
     if include_live_state and (t := rel(account.get("breakerFor"))) is not None:
         segments.append(f"熔断，{t} 恢复")
-    # 3. degradeFor → 降级，{time} 恢复
+    # 5. degradeFor → 降级，{time} 恢复
     if include_live_state and (t := rel(account.get("degradeFor"))) is not None:
         segments.append(f"降级，{t} 恢复")
-    # 4. cooldownFor / inCooldown → 冷却，{time} 恢复
+    # 6. cooldownFor / inCooldown → 冷却，{time} 恢复
     t = rel(account.get("cooldownFor")) if include_live_state else None
     if t is None and include_live_state and account.get("inCooldown") is True:
         t = _fmt_rel_time(0, base, tz)  # deadline within the current second
@@ -514,7 +524,7 @@ def status_segments(
         # CodeArts `until` is a wall time without a timezone. Its explicit
         # cooling flag is usable, but inventing a recovery instant is not.
         segments.append("冷却")
-    # 5. modelCooldowns entries → {model}被429，{t} 恢复, or with cappedAt:
+    # 7. modelCooldowns entries → {model}被429，{t} 恢复, or with cappedAt:
     #    {model}额度用满，{t} 恢复 (time from expiresAt, ABSOLUTE epoch)
     cooldowns = account.get("modelCooldowns") if include_live_state else None
     if isinstance(cooldowns, list):
@@ -529,14 +539,14 @@ def status_segments(
                 continue
             label = "额度用满" if "cappedAt" in entry else "被429"
             segments.append(f"{model}{label}，{t} 恢复")
-    # 6-8. boolean guards (no time)
+    # 8-10. boolean guards (no time)
     if account.get("reserveBlocked") is True:
         segments.append("保留积分停单")
     if account.get("dailyLimitBlocked") is True:
         segments.append("当日限额停单")
     if account.get("creditLimitReached") is True:
         segments.append("积分达限（仅免费模型）")
-    # 9. disabledModels → operator-configured per-account model blacklist.
+    # 11. disabledModels → operator-configured per-account model blacklist.
     #    Distinct from modelCooldowns: the account keeps serving other models.
     #    Render ids exactly as the Hub sends them (upstream stores lowercase).
     #    Cap the rendered list at 6 ids and append 等 N 个 with the real total,
@@ -548,7 +558,7 @@ def status_segments(
             shown = ids[:6]
             tail = f" 等 {len(ids)} 个" if len(ids) > 6 else ""
             segments.append(f"已禁用模型：{'、'.join(shown)}{tail}")
-    # 10. Consecutive hard-failure early warning. Only for fails >= 2: one
+    # 12. Consecutive hard-failure early warning. Only for fails >= 2: one
     #     transient failure is background noise, but two means the next hard
     #     failure is the one that matters. Suppressed when a blocker
     #     (熔断/降级/冷却) is already shown — the count would be redundant.
@@ -566,7 +576,7 @@ def status_segments(
             segments.append(f"连续失败 {fails} 次（{fail_window} 秒窗口）")
         else:
             segments.append(f"连续失败 {fails} 次")
-    # 11. Historical-error fallback. lastError is a HISTORICAL record: it
+    # 13. Historical-error fallback. lastError is a HISTORICAL record: it
     #     survives after a model cooldown pill clears (upstream v1.7.14+),
     #     so an account can look idle yet carry a stale 429 with NO current
     #     block and NO unblock time. Only show that history when no other

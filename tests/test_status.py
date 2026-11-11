@@ -589,6 +589,46 @@ class TestRestrictedFor:
         assert seg.index("上游风控限制") < seg.index("熔断")
 
 
+class TestAccountBanned:
+    @pytest.mark.parametrize("include_live_state", [True, False])
+    @pytest.mark.parametrize("enabled", [True, False])
+    @pytest.mark.parametrize("banned_at", [None, 1760685780])
+    @pytest.mark.parametrize("legacy", [{}, {"restrictedFor": 7200}])
+    async def test_persistent_ban(self, include_live_state, enabled, banned_at, legacy):
+        seg = status_segments(
+            live_account(accountBanned=True, bannedAt=banned_at,
+                         enabled=enabled, lastError=STALE_429, **legacy),
+            TZ, HUB_NOW, include_live_state=include_live_state,
+        )
+        assert seg == "已封禁，需手动启用"
+
+    @pytest.mark.parametrize("fields", [{}, {"accountBanned": False}])
+    @pytest.mark.parametrize("include_live_state", [True, False])
+    async def test_legacy_restriction(self, fields, include_live_state):
+        assert status_segments(
+            live_account(restrictedFor=7200, **fields), TZ, HUB_NOW,
+            include_live_state=include_live_state,
+        ) == ("上游风控限制，10-17 17:18 恢复" if include_live_state else "")
+
+    @pytest.mark.parametrize("value", [False, None, 1, "true"])
+    async def test_requires_literal_true(self, value):
+        assert status_segments(
+            live_account(accountBanned=value, bannedAt=1760685780), TZ, HUB_NOW,
+        ) == ""
+
+    async def test_priority(self):
+        assert status_segments(
+            live_account(tokenExpired=True, enabled=False, accountBanned=True,
+                         restrictedFor=7200, breakerFor=60, degradeFor=120,
+                         cooldownFor=180), TZ, HUB_NOW,
+        ) == ("凭证过期，需重新登录；已封禁，需手动启用；"
+              "熔断，10-17 15:19 恢复；降级，10-17 15:20 恢复；冷却，10-17 15:21 恢复")
+
+    async def test_report_displays_ban(self):
+        report = build_report([live_account(accountBanned=True)])
+        assert "已封禁，需手动启用" in line_for(format_report(report), "deadbeef")
+
+
 class TestCredentialExpired:
     async def test_token_expired_first(self):
         seg = status_segments(
