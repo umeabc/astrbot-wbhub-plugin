@@ -230,9 +230,8 @@ class TestChannelRequests:
         text = text_of(await run(plugin, "/wb hw 0"))
         assert "账号（2）：" in text
         assert "codearts [codearts]【已停用】" in text
-        # CodeArts usage rows carry no credit figure, so the per-account line
-        # is tokens-only; the balance comes from the CodeArts roster.
-        assert "已消耗 3,333 Token，剩余 12 积分" in text
+        # Usage supplies consumed credits; the separate roster supplies balance.
+        assert "已消耗 3,333 Token / 1 积分，剩余 12 积分" in text
         assert "idle-hw- [codearts]" in text
         assert "剩余 12 积分" in text and "剩余 8 积分" in text
         assert "可用积分：20" in text
@@ -260,7 +259,7 @@ class TestChannelRequests:
         assert "Token：3,654" in text
         assert "账号（2）：" in text
         deleted = next(line for line in text.splitlines() if line.startswith("dead-hw-"))
-        assert deleted == "dead-hw-【已删除】：已消耗 321 Token"
+        assert deleted == "dead-hw-【已删除】：已消耗 321 Token / 0 积分"
         assert "剩余" not in deleted
         assert "zero-hw-" not in text
 

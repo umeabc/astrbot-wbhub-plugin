@@ -529,9 +529,6 @@ class WorkBuddyUsagePlugin(Star):
             range_end=datetime.fromtimestamp(until, tz),
             detailed=spec.is_detailed,
             channel=channel,
-            # CodeArts records tokens only: its usage rows have credit=0.0 and
-            # no credits object, so a credit column would be fabricated.
-            credits_reported=channel != "hw",
         )
 
     def report_notice(self) -> str:

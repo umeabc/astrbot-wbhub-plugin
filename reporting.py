@@ -243,7 +243,6 @@ def aggregate(
     range_end: datetime | None = None,
     detailed: bool = True,
     channel: str = "cn",
-    credits_reported: bool = True,
 ) -> DailyReport:
     """Build a DailyReport from a validated analytics payload.
 
@@ -266,9 +265,6 @@ def aggregate(
     - detailed=False suppresses the current-state extras (cumulative total,
       per-account balance, 429 / risk-control status) — those are rendered by
       format_report from this flag;
-    - credits_reported=False marks a channel whose usage rows never carry a
-      real credit figure (CodeArts). format_report then prints tokens only
-      instead of a column of fabricated zeros.
     """
     warnings: list[str] = []
     summary_window = payload.get("summary", {}).get("window", {})
@@ -414,7 +410,6 @@ def aggregate(
         available_credits=available_credits,
         detailed=detailed,
         channel=channel,
-        credits_reported=credits_reported,
     )
 
 
@@ -751,10 +746,7 @@ def format_report(report: DailyReport) -> str:
         _window_line(report) if report.range_label else report.day.isoformat(),
         f"{label}已消耗 Token：{report.total_tokens:,}",
     ]
-    # CodeArts usage rows carry no credit figure at all; printing the resulting
-    # zero would read as "you spent nothing", which is the opposite of true.
-    if report.credits_reported:
-        lines.append(f"{label}已消耗积分：{format_credit(report.total_credits)}")
+    lines.append(f"{label}已消耗积分：{format_credit(report.total_credits)}")
     if not report.range_label or report.detailed:
         lines.extend((all_time_line, available_line))
     if report.accounts:
@@ -772,35 +764,25 @@ def format_report(report: DailyReport) -> str:
             else:
                 tail = ""
             if report.channel == "hw":
-                # Tokens are the only consumption figure CodeArts reports.
-                consumed = f"{a.tokens:,} Token"
+                consumed = f"{a.tokens:,} Token / {format_credit(a.credits)} 积分"
             else:
                 consumed = f"{format_credit(a.credits)} 积分"
             lines.append(f"{a.uid[:8]}{realm}{status}：已消耗 {consumed}{tail}")
     else:
         lines.append("账号：无账号")
-    if report.excluded_tokens != 0 or (
-        report.credits_reported and report.excluded_credits != 0
-    ):
-        if report.credits_reported:
-            lines.append(
-                f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
-                f"{report.excluded_tokens:,} Token"
-            )
-        else:
-            lines.append(f"未归属消耗：{report.excluded_tokens:,} Token")
+    if report.excluded_tokens != 0 or report.excluded_credits != 0:
+        lines.append(
+            f"未归属消耗：{format_credit(report.excluded_credits)} 积分 / "
+            f"{report.excluded_tokens:,} Token"
+        )
     if report.models:
         lines.append("使用模型统计：")
         for m in report.models:
             # Tokens and credits side by side: the credit figure alone hides
             # how much traffic produced it (cache hits and cheap models).
-            # Without a credit figure, tokens alone still say what ran.
-            if report.credits_reported:
-                lines.append(
-                    f"{m.model}：{m.tokens:,} Token / {format_credit(m.credits)} 积分"
-                )
-            else:
-                lines.append(f"{m.model}：{m.tokens:,} Token")
+            lines.append(
+                f"{m.model}：{m.tokens:,} Token / {format_credit(m.credits)} 积分"
+            )
     else:
         lines.append(
             "使用模型统计：今日暂无用量"
