@@ -4,7 +4,7 @@ AstrBot 插件：在任意 AstrBot 消息平台（QQ 与 Telegram 等）发一�
 
 纯文本输出，不依赖文转图服务，不需要模型参与。
 
-当前版本：**v1.3.13**。适配 Hub v2.1.5：持久封禁显示「已封禁，需手动启用」，详细与宽区间视图均保留，兼容旧版风控倒计时。`/wb 1` 改为**最近 24 小时滚动窗口**（不再是「今天 00:00 起」），与默认的当日视图彻底区分；CodeArts（`hw`）恢复显示已消耗积分。渠道选择见 v1.3.8：`/wb cn`、`/wb int`、`/wb hw`、`/wb all`；单独 `/wb all` 表示全渠道当日，国内版全部时间请用 `/wb cn all`。
+当前版本：**v1.3.14**。适配 Hub v2.2.1：持久封禁显示「已封禁，需手动启用」，详细与宽区间视图均保留，兼容旧版风控倒计时。`/wb 1` 改为**最近 24 小时滚动窗口**（不再是「今天 00:00 起」），与默认的当日视图彻底区分；CodeArts（`hw`）恢复显示已消耗积分。渠道选择见 v1.3.8：`/wb cn`、`/wb int`、`/wb hw`、`/wb all`；单独 `/wb all` 表示全渠道当日，国内版全部时间请用 `/wb cn all`。
 
 - 仓库：<https://github.com/umeabc/astrbot-wbhub-plugin>
 - 数据来源：WorkBuddy Hub 的 `/panel/login` + `/usage/analytics` + `/accounts` / `/codearts/accounts`（`X-Panel-Token` 认证）
@@ -251,7 +251,7 @@ python -m pytest tests -q
 ## 兼容性
 
 - **AstrBot**：基于 4.16+ 的插件 API（`Star` / `filter.command` / `AstrBotConfig`）。已在真实实例上跑通命令路径。
-- **WorkBuddy Hub**：契约按上游**官方正式发布 tag [v2.1.5](https://github.com/niyouqianma/workbuddy2api-hub/tree/v2.1.5)** 源码复核；此前已在运行 2.0.6 的运维实例上逐条验证（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.9 → 官方 tag v2.0.6 源码对照及 v2.0.8 → v2.1.1 增量复核（以下真机结果为此前部署的观测）：
+- **WorkBuddy Hub**：契约按上游**官方正式发布 tag [v2.2.1](https://github.com/niyouqianma/workbuddy2api-hub/tree/v2.2.1)** 源码复核；此前已在运行 2.0.6 的运维实例上逐条验证（旧版本新增状态字段缺失时，对应状态不显示；`hw` 需要 Hub 支持 CodeArts 统计及账号接口）。v1.10.9 → 官方 tag v2.0.6 源码对照及 v2.0.8 → v2.1.1 增量复核（以下真机结果为此前部署的观测）：
   - `/usage/analytics`：`_new_analytics_stat()`、`_get_usage_analytics()`、`compute_usage_analytics()`、`range_window()` 与 v1.10.9 **逐字节相同**；v1.7.12 → 2.0.6 期间 payload 结构（`summary.window` / `summary.all_time` / `accounts[]` / `models[]` / `keys[]`）与 Stat 的 15 个计数字段没有改动；`range=custom` 仍按 epoch 秒解释，`since=0` 仍视为「无下界」。
   - `/accounts`：截至 v2.0.8 的 2.0.x 变更只在响应里**增加**字段 —— `Account.public()` 新增 `group` / `poolScope` / `hasDeviceToken`，`account_views()` 将 `poolScope` 规范化为 `text` / `media`（v2.0.2 的文体池分离）；顶层新增 `text_ready` / `media_ready`，`usable` 改为文本池就绪数（此前真机 2.0.6 部署未返回两个新增计数，仅有 `usable`；官方 tag 源码明确返回三者）。插件报表不使用 `usable` / `text_ready` / `media_ready` / `poolScope`，渲染字段（`cooldownFor` / `breakerFor` / `degradeFor` / `restrictedFor`（旧版）/ `accountBanned`（v2.1.0+）/ `modelCooldowns[].expiresAt|cappedAt` / `fails` / `failWindow` / `lastError` / `disabledModels` / 三种停单 / `tokenExpired` / `needRelogin` / `enabled` / `credits.remain`）除下述风控字段替换外均保留。
   - `/codearts/accounts`：响应仍是 `{provider, accounts, stats, models, base_url}`；账号行仍是 `uid` / `credits.remain` / `disabled`（插件把 `disabled` 归一成 `enabled`）等，**没有 `realm`**，插件按独立接口补 `realm="codearts"`。`CodeArtsAccount.view()` 与 v1.10.9 逐字节相同；新增的 `manual_disabled` 仅用于内部状态及持久化，不出现在公开视图中，手动停用仍通过 `disabled` 表达。它的 `until` 是无时区字符串，插件不据此推算恢复时间。
@@ -267,6 +267,10 @@ python -m pytest tests -q
   - **CodeArts 积分（#866）**：`wb_codearts.py` 请求前采样累计 used，请求结束按差值结算，`wb_proxy.py` 写入 usage 行 `credit`；原 analytics Stat 链路已汇总该字段，所以插件恢复显示积分。并发采用账号级结算水位避免重复计费，单请求/模型归属可能受结算顺序影响；旧记录不回填。
   - **v2.1.2 其他变化**：请求列表筛选、Key 日 token 限量、并发排队、`WB_SANITIZE_LOOSE_BILLING`、`WB_MSGSTAT_SHARDS` 等属于请求路径、统计实现或看板，不改变本插件消费的面板 JSON 契约。本次为本地源码及离线测试验证，未作 v2.1.2 真机验收。
   - **v2.1.2 → v2.1.5**：本地官方 tag 逐函数核对，analytics 四个函数、`Account.public()` / `account_views()` / `_get_accounts()`（含 `usable` / `text_ready` / `media_ready`）、`CodeArtsAccount.view()` / 端点处理、更新检查与登录/退出处理均相同，插件消费的面板 JSON 契约未变。v2.1.3 是迁移版重建资产；v2.1.4 新增网页工具网关 `/v1/tools/*` 与外部账号 API（`account:auth` / `account:read` scope），修复 Responses 工具顺序并加速积分刷新；v2.1.5 将更新源与面板入口切到新仓库。新增接口不改变插件使用的端点与 `X-Panel-Token` 鉴权。`/updates` / `/updates/check` 无独立 repo 字段，`release_url` 可随更新源迁移，插件提示仅读取版本字段，不受影响；无需修改运行时代码。本次仅完成本地源码及离线测试验证，未作 v2.1.5 真机验收。
+  - **v2.1.5 → v2.2.1**：离线对照本地官方 tag 源码，`_new_analytics_stat()` / `_get_usage_analytics()` / `compute_usage_analytics()` / `range_window()`、`Account.public()` / `account_views()` / `_get_accounts()`（含 `usable` / `text_ready` / `media_ready`）、`CodeArtsAccount.view()` / `_get_codearts_accounts()`、`_get_updates()` / `_route_update_check()` 与 `wb_updates.status()` / `check()`、登录/退出所在的 `_handle_panel()` 均逐字节相同；无需修改插件解析或 Stat 校验。本次为源码及离线测试复核，未在 v2.2.1 真机验收。
+  - **v2.1.7 日志轮转**：活动 `usage.jsonl` 默认达到 8 MiB 后封存至 `usage.jsonl.segments/`，历史段保留并可后台压缩。analytics 的累计聚合与窗口扫描经 `_scan_usage_from()` / `_read_usage_rows()` → `_open_usage_or_file()` → `wb_usage_io.open_log()` → `_SegmentReader`，由 `_layout()` 拼接封存段及活动文件，支持跨段 seek 与 gzip 读取，并复用缓存、归档摘要及时间索引。因此在日志完整的正常轮转下，`/wb cn all`、`/wb cn month`、`/wb hw all` 均透明覆盖封存段，不会因轮转漏算。大历史区间在冷缓存、摘要失效或需扫描/解压时可能更慢，超过插件配置的 HTTP 超时会报查询失败，并非正常返回时静默遗漏封存段。
+  - **v2.2.0 音频接口与记账**：新增 `/v1/audio/speech`（TTS）和 `/v1/audio/transcriptions`（ASR），默认关闭，插件不调用这两个端点。开启后写入的 `kind=tts/asr` 音频用量行**会进入 `/usage/analytics`**，仍按 realm、时间窗口及终态规则聚合（`client_aborted` 不计入）；`_fold_usage_analytics()` 不按 kind 排除音频。`kind` 与 `cost_policy` 是既有原始流水字段，本次新增的是 `tts` / `asr` 与 `audio` 取值，二者不会透传为 Stat 字段。成功音频调用目前写入 `credit=0`、不提供 Token 数，聚合为 0 Token / 0 积分，并计入请求数及耗时；已记录的失败行计入错误数。analytics 仍生成既有的 15 个基础计数字段及派生值，插件严格数值校验不受影响，不需新增 kind/cost_policy 枚举或放宽校验。
+  - **v2.2.1 打包修复**：Docker、便携包和 OpenWrt 包补入 `wb_webgateway/`，便携更新源修正为 `niyouqianma/workbuddy2api-hub`。这些变更修复网关部署及便携更新，不改变本插件消费的端点与版本提示契约；插件无需代码调整。
   - 另注：上游已声明该项目进入**低频维护**状态，WorkBuddy 可能随时收紧访问方式，网关可用性不作保证。
 - 支持平台：任意 AstrBot 平台适配器（已在 aiocqhttp / qq_official 上验证；telegram 等纯文本平台同理）。
 
