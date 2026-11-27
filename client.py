@@ -508,6 +508,14 @@ class WorkBuddyClient:
         v1.10.9 CodeArtsAccount.view() omits realm/product and uses disabled
         instead of enabled. Normalize only fields whose meaning is explicit;
         its zone-less `until` must not be treated as a recovery timestamp.
+
+        Since v2.2.4 a rejected refresh_token no longer flips ``disabled``; it
+        sets the snake_case ``needs_relogin`` instead and leaves the account
+        enabled (the Hub's own healthy() excludes it from dispatch).
+        status_segments() keys on the camelCase ``needRelogin``, so without
+        this mapping a CodeArts account awaiting a fresh login would be
+        reported as perfectly usable. Only the True case is mapped: an absent
+        field simply means this Hub has no such state.
         """
         raw = await self._fetch_json("get", "/codearts/accounts", "codearts-accounts")
         payload = validate_accounts(raw)
@@ -515,6 +523,8 @@ class WorkBuddyClient:
             entry["realm"] = "codearts"
             if isinstance(entry.get("disabled"), bool):
                 entry["enabled"] = not entry["disabled"]
+            if entry.get("needs_relogin") is True:
+                entry["needRelogin"] = True
         return payload
 
     async def fetch_updates(self) -> Mapping[str, Any]:

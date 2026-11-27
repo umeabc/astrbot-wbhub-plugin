@@ -240,6 +240,38 @@ class TestChannelRequests:
         assert channel_hub.accounts_calls == []
         assert len(channel_hub.codearts_calls) == 1
 
+    @pytest.mark.parametrize("token", ("0", "30"))
+    async def test_hw_needs_relogin_is_reported_in_every_window(
+        self, channel_hub, session, token
+    ):
+        # v2.2.4: a rejected refresh_token sets needs_relogin (snake_case)
+        # instead of disabled, so the account stays enabled and only this
+        # field marks it unusable. Without the mapping the report would show
+        # a dead account as normal — including in wide windows, because a
+        # credential that needs a fresh login is a structural fact, not a
+        # countdown.
+        channel_hub.codearts_body["accounts"][0].update({
+            "disabled": False, "needs_relogin": True,
+            "credits": {"remain": 12},
+        })
+        plugin = channel_plugin(channel_hub, session)
+        text = text_of(await run(plugin, f"/wb hw {token}"))
+        assert "codearts [codearts]【凭证过期，需重新登录】" in text
+        assert "已停用" not in text
+
+    async def test_hw_relogin_flag_absent_or_false_changes_nothing(
+        self, channel_hub, session
+    ):
+        account = channel_hub.codearts_body["accounts"][0]
+        for value in (None, False):
+            account.pop("needs_relogin", None)
+            if value is not None:
+                account["needs_relogin"] = value
+            plugin = channel_plugin(channel_hub, session)
+            text = text_of(await run(plugin, "/wb hw 0"))
+            assert "codearts [codearts]：已消耗" in text
+            assert "需重新登录" not in text
+
     @pytest.mark.parametrize("token", ("0", "7"))
     async def test_hw_keeps_deleted_token_only_usage_but_omits_empty_deleted_rows(
         self, channel_hub, session, token
